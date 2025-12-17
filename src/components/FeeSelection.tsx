@@ -44,15 +44,19 @@ export default function FeeSelection({ onFeeSelect, estimatedVbytes, selectedFee
       if (!response.ok) throw new Error('Failed to fetch fees');
       
       const fees = await response.json();
+      console.log('📊 Mempool fees:', fees);
       
-      // Use minimum fee + 1 sat/vbyte as recommended
-      const minimumFee = fees.minimumFee || fees.hourFee || 5;
+      // Use the actual minimum fee from mempool, then add +1 sat/vbyte
+      // fees.minimumFee is the current mempool minimum
+      const minimumFee = fees.minimumFee || 1;
       const recommendedFee = minimumFee + 1;
+      
+      console.log(`💰 Fee calculation: mempool minimum=${minimumFee}, recommended=${recommendedFee}`);
       
       const options: FeeOption[] = [
         {
           label: 'Recommended',
-          speed: 'Next block',
+          speed: `Next block (${minimumFee} + 1)`,
           feeRate: recommendedFee,
           icon: '',
         },

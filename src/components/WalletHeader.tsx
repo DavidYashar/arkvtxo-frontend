@@ -363,12 +363,15 @@ export default function WalletHeader() {
       // Get server info
       setWithdrawProgress('Getting server info...');
       const info = await arkadeWallet.arkProvider.getInfo();
-      console.log('Server info received');
+      console.log('Server info received:', info);
       
-      // Prepare fee info
+      // Prepare fee info - ALWAYS use user's selected fee rate
       let feeInfo;
       if (info?.fees) {
-        feeInfo = info.fees;
+        feeInfo = {
+          ...info.fees,
+          txFeeRate: withdrawFeeRate.toString(), // Override with user's selected fee
+        };
       } else {
         feeInfo = {
           intentFee: {
@@ -377,11 +380,14 @@ export default function WalletHeader() {
             onchainInput: BigInt(0),
             onchainOutput: BigInt(200),
           },
-          txFeeRate: '0'
+          txFeeRate: withdrawFeeRate.toString(), // Use user's selected fee
         };
       }
       
-      console.log('Using fee info:', feeInfo);
+      console.log('Using fee info with user-selected fee rate:', {
+        ...feeInfo,
+        userSelectedFeeRate: withdrawFeeRate
+      });
 
       // Prepare withdrawal amount
       let amount: bigint | undefined;
