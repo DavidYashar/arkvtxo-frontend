@@ -66,12 +66,27 @@ export default function WalletHeader() {
     if (wallet) {
       setConnected(true);
       const addrs = await getAllAddresses();
+      
+      // Get the actual boarding address from the Arkade wallet
+      let boardingAddr = '';
+      try {
+        const { getWalletAsync } = await import('@/lib/wallet');
+        const walletInstance = await getWalletAsync();
+        if (walletInstance?.wallet) {
+          boardingAddr = await walletInstance.wallet.getBoardingAddress();
+          console.log('🎯 Boarding address fetched:', boardingAddr);
+        }
+      } catch (error) {
+        console.error('Failed to get boarding address:', error);
+      }
+      
       if (addrs) {
         setAddresses({
           offchain: addrs.arkade,
           onchain: addrs.taproot,
-          boarding: addrs.taproot,
+          boarding: boardingAddr || addrs.taproot, // Use actual boarding address
           segwit: addrs.segwit,
+          taproot: addrs.taproot,
         });
       }
       const bals = await getAllBalances();
