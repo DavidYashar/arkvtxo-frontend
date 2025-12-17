@@ -46,17 +46,17 @@ export default function FeeSelection({ onFeeSelect, estimatedVbytes, selectedFee
       const fees = await response.json();
       console.log('📊 Mempool fees:', fees);
       
-      // Use the actual minimum fee from mempool, then add +1 sat/vbyte
-      // fees.minimumFee is the current mempool minimum
-      const minimumFee = fees.minimumFee || 1;
-      const recommendedFee = minimumFee + 1;
+      // Use fastestFee as base (for next block confirmation)
+      // fastestFee is the fee rate needed for fastest confirmation
+      const fastestFee = fees.fastestFee || 2;
+      const recommendedFee = fastestFee + 1;
       
-      console.log(`💰 Fee calculation: mempool minimum=${minimumFee}, recommended=${recommendedFee}`);
+      console.log(`💰 Fee calculation: fastest=${fastestFee}, recommended=${recommendedFee}`);
       
       const options: FeeOption[] = [
         {
           label: 'Recommended',
-          speed: `Next block (${minimumFee} + 1)`,
+          speed: `Next block (${fastestFee} + 1)`,
           feeRate: recommendedFee,
           icon: '',
         },

@@ -49,7 +49,6 @@ export default function WalletHeader() {
   const [withdrawSuccess, setWithdrawSuccess] = useState<string | null>(null);
   const [withdrawProgress, setWithdrawProgress] = useState<string>('');
   const [showNewWalletModal, setShowNewWalletModal] = useState(false);
-  const [boardFeeRate, setBoardFeeRate] = useState<number>(31);
   const [withdrawFeeRate, setWithdrawFeeRate] = useState<number>(31);
   const [newWalletCreds, setNewWalletCreds] = useState<{ privateKey: string; mnemonic: string } | null>(null);
   const [credsConfirmed, setCredsConfirmed] = useState(false);
@@ -1153,16 +1152,11 @@ export default function WalletHeader() {
                 </div>
               )}
 
-              {/* Fee Selection */}
-              <div>
-                <FeeSelection
-                  onFeeSelect={setBoardFeeRate}
-                  estimatedVbytes={180}
-                  selectedFee={boardFeeRate}
-                />
-                <div className="mt-2 text-xs text-gray-600 bg-yellow-50 border border-yellow-200 rounded p-2">
-                  ⚠️ <strong>Note:</strong> Boarding fees are handled by the Arkade ASP server. The fee rate shown is the current recommended minimum (+1 sat/vbyte above mempool block).
-                </div>
+              {/* Info about ASP fees */}
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <p className="text-sm text-gray-700">
+                  <span className="font-semibold">⚡ Network Fees:</span> Transaction fees are automatically calculated and handled by the Arkade ASP server based on current network conditions. No manual fee selection needed.
+                </p>
               </div>
 
               {/* Action Buttons */}
