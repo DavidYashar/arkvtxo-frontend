@@ -234,7 +234,7 @@ export default function WalletHeader() {
       }
 
       setBoardProgress('Checking for boarding UTXOs...');
-      console.log('🔍 Starting boarding process...');
+      console.log('🔍 Starting automated boarding process...');
       console.log('Taproot balance:', balances.taproot, 'sats');
       
       // Import Ramps for onboarding
@@ -248,31 +248,68 @@ export default function WalletHeader() {
       try {
         boardingUtxos = await wallet.wallet.getBoardingUtxos();
         boardingAddress = await wallet.wallet.getBoardingAddress();
-        console.log('📦 Boarding UTXOs:', boardingUtxos);
+        console.log('📦 Boarding UTXos:', boardingUtxos);
         console.log('📍 Boarding address:', boardingAddress);
       } catch (error) {
         console.error('Failed to get boarding info:', error);
         throw new Error(`Failed to get boarding information: ${error instanceof Error ? error.message : 'Unknown error'}`);
       }
       
+      // STEP 1: If no boarding UTXOs, send Bitcoin to boarding address first
       if (!boardingUtxos || boardingUtxos.length === 0) {
-        // No boarding UTXOs - need to send Bitcoin to boarding address first
-        throw new Error(
-          `❌ No boarding UTXOs found.\n\n` +
-          `Your ${balances.taproot.toLocaleString()} sats are in your Taproot address, NOT the boarding address.\n\n` +
-          `📋 Boarding Process (2 steps required):\n\n` +
-          `Step 1: Send Bitcoin to boarding address:\n${boardingAddress}\n\n` +
-          `Step 2: Wait for confirmation (~10 min)\n\n` +
-          `Step 3: Click "Board to Arkade" again\n\n` +
-          `💡 EASIER ALTERNATIVE:\n` +
-          `Use "Send Bitcoin" to send directly to your Arkade offchain address (${addresses?.offchain?.slice(0, 30)}...) for instant VTXOs without the 2-step boarding process!`
-        );
+        console.log('⚡ No boarding UTXOs found - initiating automatic transfer to boarding address...');
+        setBoardProgress(`Step 1/2: Sending ${balances.taproot.toLocaleString()} sats to boarding address...`);
+        
+        try {
+          // Send all Taproot balance to boarding address
+          const sendTx = await wallet.wallet.send({
+            to: boardingAddress,
+            amount: balances.taproot,
+          });
+          
+          console.log('✅ Sent to boarding address, TX:', sendTx);
+          setBoardProgress('Step 1/2: Complete! Waiting for confirmation (~10 min)...');
+          
+          // STEP 2: Wait for the UTXO to appear (poll every 30 seconds)
+          setBoardProgress('Step 2/2: Monitoring for confirmation...');
+          console.log('⏳ Polling for boarding UTXO confirmation...');
+          
+          let attempts = 0;
+          const maxAttempts = 40; // 20 minutes max (40 * 30 seconds)
+          
+          while (attempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 30000)); // Wait 30 seconds
+            attempts++;
+            
+            console.log(`Checking for boarding UTXOs (attempt ${attempts}/${maxAttempts})...`);
+            setBoardProgress(`Step 2/2: Checking for confirmation (${attempts * 30}s elapsed)...`);
+            
+            boardingUtxos = await wallet.wallet.getBoardingUtxos();
+            
+            if (boardingUtxos && boardingUtxos.length > 0) {
+              console.log(`✅ Boarding UTXO confirmed! Found ${boardingUtxos.length} UTXO(s)`);
+              setBoardProgress('Step 2/2: Confirmed! Now boarding to Arkade L2...');
+              break;
+            }
+          }
+          
+          if (!boardingUtxos || boardingUtxos.length === 0) {
+            throw new Error(
+              `Transaction sent but not confirmed yet.\n\n` +
+              `TX: ${sendTx}\n\n` +
+              `Please wait a bit longer and click "Board to Arkade" again to complete the process.`
+            );
+          }
+        } catch (error) {
+          console.error('Failed to send to boarding address:', error);
+          throw new Error(`Failed to send to boarding address: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
       }
       
       console.log(`✅ Found ${boardingUtxos.length} boarding UTXO(s), proceeding with onboard...`);
       
       // Call onboard() to board ALL boarding UTXOs into Arkade VTXOs
-      setBoardProgress('Initiating onboard transaction...');
+      setBoardProgress('Finalizing: Creating Arkade VTXOs...');
       const txid = await ramps.onboard();
       
       console.log('Boarding transaction sent:', txid);
