@@ -6,6 +6,7 @@
  */
 
 import { io, Socket } from 'socket.io-client';
+import { getWebSocketToken } from './api';
 
 const INDEXER_URL = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3001';
 
@@ -31,7 +32,10 @@ class WebSocketService {
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
-      reconnectionAttempts: this.maxReconnectAttempts
+      reconnectionAttempts: this.maxReconnectAttempts,
+      auth: {
+        token: getWebSocketToken()
+      }
     });
 
     this.socket.on('connect', () => {
