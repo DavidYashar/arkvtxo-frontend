@@ -266,7 +266,7 @@ export default function WalletHeader() {
           `Step 2: Wait for confirmation (~10 min)\n\n` +
           `Step 3: Click "Board to Arkade" again\n\n` +
           `💡 EASIER ALTERNATIVE:\n` +
-          `Use "Send Bitcoin" to send directly to your Arkade offchain address (${addresses?.arkade?.slice(0, 30)}...) for instant VTXOs without the 2-step boarding process!`
+          `Use "Send Bitcoin" to send directly to your Arkade offchain address (${addresses?.offchain?.slice(0, 30)}...) for instant VTXOs without the 2-step boarding process!`
         );
       }
       
