@@ -49,6 +49,7 @@ export default function WalletHeader() {
   const [withdrawSuccess, setWithdrawSuccess] = useState<string | null>(null);
   const [withdrawProgress, setWithdrawProgress] = useState<string>('');
   const [showNewWalletModal, setShowNewWalletModal] = useState(false);
+  const [boardFeeRate, setBoardFeeRate] = useState<number>(31);
   const [withdrawFeeRate, setWithdrawFeeRate] = useState<number>(31);
   const [newWalletCreds, setNewWalletCreds] = useState<{ privateKey: string; mnemonic: string } | null>(null);
   const [credsConfirmed, setCredsConfirmed] = useState(false);
@@ -261,10 +262,12 @@ export default function WalletHeader() {
         setBoardProgress(`Step 1/2: Sending ${balances.taproot.toLocaleString()} sats to boarding address...`);
         
         try {
-          // Send all Taproot balance to boarding address
+          // Send all Taproot balance to boarding address with user-selected fee
+          console.log(`💰 Using boarding fee rate: ${boardFeeRate} sat/vbyte`);
           const sendTx = await wallet.wallet.send({
             to: boardingAddress,
             amount: balances.taproot,
+            feeRate: boardFeeRate,
           });
           
           console.log('✅ Sent to boarding address, TX:', sendTx);
@@ -1189,11 +1192,17 @@ export default function WalletHeader() {
                 </div>
               )}
 
-              {/* Info about ASP fees */}
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                <p className="text-sm text-gray-700">
-                  <span className="font-semibold">⚡ Network Fees:</span> Transaction fees are automatically calculated and handled by the Arkade ASP server based on current network conditions. No manual fee selection needed.
-                </p>
+              {/* Fee Selection for Boarding Transfer */}
+              <div>
+                <div className="mb-2">
+                  <p className="text-sm font-semibold text-gray-700">⚡ Transfer Fee (Taproot → Boarding Address)</p>
+                  <p className="text-xs text-gray-600 mt-1">Fee for sending Bitcoin to the boarding address. The final onboard to Arkade L2 is handled by ASP.</p>
+                </div>
+                <FeeSelection
+                  onFeeSelect={setBoardFeeRate}
+                  estimatedVbytes={154}
+                  selectedFee={boardFeeRate}
+                />
               </div>
 
               {/* Action Buttons */}
