@@ -4,16 +4,19 @@
  */
 
 const API_KEY = process.env.NEXT_PUBLIC_API_KEY || '';
+const BACKEND_URL = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3001';
 
-// Override global fetch for all API calls to automatically include auth
+// Override global fetch for backend API calls to automatically include auth
 const originalFetch = global.fetch;
 global.fetch = function (input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
   
-  // Only add auth header for backend API calls
-  if (url.includes('/api/')) {
+  // Only add auth header for OUR backend API calls (not external APIs like mempool.space)
+  const isBackendRequest = url.includes(BACKEND_URL) || (url.includes('/api/') && !url.includes('://'));
+  
+  if (isBackendRequest && API_KEY) {
     const headers = new Headers(init?.headers);
-    if (API_KEY && !headers.has('X-API-Key')) {
+    if (!headers.has('X-API-Key')) {
       headers.set('X-API-Key', API_KEY);
     }
     return originalFetch(input, { ...init, headers });
