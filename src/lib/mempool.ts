@@ -4,17 +4,10 @@
  */
 
 export function getMempoolUrl(txid: string): string {
-  const network = process.env.NEXT_PUBLIC_NETWORK || 'testnet';
-  const baseUrl = network === 'mainnet' 
-    ? 'https://mempool.space'
-    : 'https://mutinynet.com';
-  
-  return `${baseUrl}/tx/${txid}`;
-}
+  const network = process.env.NEXT_PUBLIC_NETWORK || 'mainnet'; // Default to mainnet
 
 export function getAddressUrl(address: string): string {
-  const network = process.env.NEXT_PUBLIC_NETWORK || 'testnet';
-  const baseUrl = network === 'mainnet' 
+  const network = process.env.NEXT_PUBLIC_NETWORK || 'mainnet'; // Default to mainnet
     ? 'https://mempool.space'
     : 'https://mutinynet.com';
   
