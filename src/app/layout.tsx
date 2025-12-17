@@ -4,6 +4,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import WalletHeader from "@/components/WalletHeader";
 import { ToastProvider } from "@/lib/toast";
+import "@/lib/api"; // Initialize authenticated fetch globally
 
 const geistSans = Geist({
   variable: "--font-geist-sans",

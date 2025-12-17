@@ -5,6 +5,23 @@
 
 const API_KEY = process.env.NEXT_PUBLIC_API_KEY || '';
 
+// Override global fetch for all API calls to automatically include auth
+const originalFetch = global.fetch;
+global.fetch = function (input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+  
+  // Only add auth header for backend API calls
+  if (url.includes('/api/')) {
+    const headers = new Headers(init?.headers);
+    if (API_KEY && !headers.has('X-API-Key')) {
+      headers.set('X-API-Key', API_KEY);
+    }
+    return originalFetch(input, { ...init, headers });
+  }
+  
+  return originalFetch(input, init);
+};
+
 /**
  * Make authenticated fetch request to backend API
  */
