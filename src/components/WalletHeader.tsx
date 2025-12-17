@@ -50,7 +50,6 @@ export default function WalletHeader() {
   const [withdrawSuccess, setWithdrawSuccess] = useState<string | null>(null);
   const [withdrawProgress, setWithdrawProgress] = useState<string>('');
   const [showNewWalletModal, setShowNewWalletModal] = useState(false);
-  const [boardFeeRate, setBoardFeeRate] = useState<number>(31);
   const [withdrawFeeRate, setWithdrawFeeRate] = useState<number>(31);
   const [newWalletCreds, setNewWalletCreds] = useState<{ privateKey: string; mnemonic: string } | null>(null);
   const [credsConfirmed, setCredsConfirmed] = useState(false);
@@ -257,54 +256,17 @@ export default function WalletHeader() {
         throw new Error(`Failed to get boarding information: ${error instanceof Error ? error.message : 'Unknown error'}`);
       }
       
-      // STEP 1: If no boarding UTXOs, send Bitcoin to boarding address first
+      // Check if no boarding UTXOs
       if (!boardingUtxos || boardingUtxos.length === 0) {
-        console.log('⚡ No boarding UTXOs found - initiating automatic transfer to boarding address...');
-        setBoardProgress(`Step 1/2: Sending ${balances.taproot.toLocaleString()} sats to boarding address...`);
-        
-        try {
-          // Send all Taproot balance to boarding address with user-selected fee
-          console.log(`💰 Using boarding fee rate: ${boardFeeRate} sat/vbyte`);
-          const sendTx = await wallet.wallet.send({
-            to: boardingAddress,
-            amount: balances.taproot,
-            feeRate: boardFeeRate,
-          });
-          
-          console.log('✅ Sent to boarding address, TX:', sendTx);
-          
-          // Show toast with mempool link
-          const { getMempoolUrl } = await import('@/lib/mempool');
-          toast.show(
-            `Step 1/2: Transfer sent to boarding address! Track confirmation on mempool.`,
-            'success',
-            10000,
-            {
-              action: {
-                label: 'View TX',
-                onClick: () => window.open(getMempoolUrl(sendTx), '_blank', 'noopener,noreferrer')
-              }
-            }
-          );
-          
-          // Show success message with instructions
-          setBoardSuccess(
-            `✅ Step 1/2 Complete!\n\n` +
-            `Sent ${balances.taproot.toLocaleString()} sats to boarding address.\n\n` +
-            `Transaction ID: ${sendTx}\n\n` +
-            `⏳ Next Steps:\n` +
-            `1. Wait for Bitcoin network confirmation (~10-60 minutes)\n` +
-            `2. Track your transaction on mempool (link in toast notification)\n` +
-            `3. Come back and click "Board to Arkade" again to complete the boarding\n\n` +
-            `The system will automatically detect the confirmed UTXO and finish boarding to Arkade L2.`
-          );
-          setBoardProgress('');
-          setBoarding(false);
-          return; // Exit early - user will come back later
-        } catch (error) {
-          console.error('Failed to send to boarding address:', error);
-          throw new Error(`Failed to send to boarding address: ${error instanceof Error ? error.message : 'Unknown error'}`);
-        }
+        throw new Error(
+          `❌ No Bitcoin in boarding address yet.\n\n` +
+          `Your boarding address is:\n${boardingAddress}\n\n` +
+          `📋 To board to Arkade:\n` +
+          `1. Send Bitcoin to your boarding address (shown above)\n` +
+          `2. Wait for confirmation (~10-60 minutes)\n` +
+          `3. Click "Board to Arkade" again to complete\n\n` +
+          `💡 TIP: Use the "Withdraw to Boarding Address" option when withdrawing from Arkade for easy re-boarding!`
+        );
       }
       
       console.log(`✅ Found ${boardingUtxos.length} boarding UTXO(s), proceeding with onboard...`);
@@ -981,11 +943,12 @@ export default function WalletHeader() {
                   )}
                   <div className="flex items-center justify-between p-3 bg-blue-200 border border-blue-500 rounded-lg">
                     <div>
-                      <div className="text-xs text-blue-900 mb-1">Taproot Address (On-chain)</div>
-                      <div className="font-mono text-sm text-blue-950">{formatAddress(addresses?.onchain || '')}</div>
+                      <div className="text-xs text-blue-900 mb-1">Taproot / Boarding Address</div>
+                      <div className="font-mono text-sm text-blue-950">{formatAddress(addresses?.boarding || '')}</div>
+                      <div className="text-xs text-blue-700 mt-1">💡 Send Bitcoin here to board to Arkade L2</div>
                     </div>
                     <button
-                      onClick={() => handleCopy(addresses?.onchain || '')}
+                      onClick={() => handleCopy(addresses?.boarding || '')}
                       className="p-2 bg-blue-300 text-blue-900 rounded-lg hover:bg-blue-400 transition-colors"
                     >
                       <Copy className="w-4 h-4" />
@@ -1162,7 +1125,7 @@ export default function WalletHeader() {
             <div className="p-6 space-y-6">
               {/* Balance Display */}
               <div className="bg-green-50 rounded-lg p-4">
-                <p className="text-gray-600 text-sm mb-1">Available Balance (Taproot L1)</p>
+                <p className="text-gray-600 text-sm mb-1">Bitcoin in Boarding Address</p>
                 <p className="text-2xl font-bold text-gray-900">
                   {(balances.taproot / 100_000_000).toFixed(8)} BTC
                 </p>
@@ -1171,10 +1134,10 @@ export default function WalletHeader() {
                 </p>
               </div>
 
-              {/* Info about boarding all */}
+              {/* Info about boarding */}
               <div className="bg-blue-50 border border-blue-300 rounded-lg p-4">
                 <p className="text-sm text-gray-700">
-                  <span className="font-semibold">Note:</span> Boarding will move <span className="font-bold text-blue-700">all available Taproot balance</span> to Arkade L2. This process cannot be partial - all UTXOs on your boarding address will be transferred.
+                  <span className="font-semibold">💡 Info:</span> Boarding will convert <span className="font-bold text-blue-700">all Bitcoin in your boarding address</span> into Arkade L2 VTXOs. The ASP handles transaction fees automatically.
                 </p>
               </div>
 
@@ -1207,19 +1170,6 @@ export default function WalletHeader() {
                   </div>
                 </div>
               )}
-
-              {/* Fee Selection for Boarding Transfer */}
-              <div>
-                <div className="mb-2">
-                  <p className="text-sm font-semibold text-gray-700">⚡ Transfer Fee (Taproot → Boarding Address)</p>
-                  <p className="text-xs text-gray-600 mt-1">Fee for sending Bitcoin to the boarding address. The final onboard to Arkade L2 is handled by ASP.</p>
-                </div>
-                <FeeSelection
-                  onFeeSelect={setBoardFeeRate}
-                  estimatedVbytes={154}
-                  selectedFee={boardFeeRate}
-                />
-              </div>
 
               {/* Action Buttons */}
               <div className="flex gap-3">
