@@ -44,6 +44,7 @@ export default function WalletHeader() {
   const [withdrawDestination, setWithdrawDestination] = useState('');
   const [withdrawAmount, setWithdrawAmount] = useState('');
   const [withdrawAll, setWithdrawAll] = useState(false);
+  const [withdrawToBoardingAddress, setWithdrawToBoardingAddress] = useState(false);
   const [withdrawing, setWithdrawing] = useState(false);
   const [withdrawError, setWithdrawError] = useState<string | null>(null);
   const [withdrawSuccess, setWithdrawSuccess] = useState<string | null>(null);
@@ -271,38 +272,35 @@ export default function WalletHeader() {
           });
           
           console.log('✅ Sent to boarding address, TX:', sendTx);
-          setBoardProgress('Step 1/2: Complete! Waiting for confirmation (~10 min)...');
           
-          // STEP 2: Wait for the UTXO to appear (poll every 30 seconds)
-          setBoardProgress('Step 2/2: Monitoring for confirmation...');
-          console.log('⏳ Polling for boarding UTXO confirmation...');
-          
-          let attempts = 0;
-          const maxAttempts = 40; // 20 minutes max (40 * 30 seconds)
-          
-          while (attempts < maxAttempts) {
-            await new Promise(resolve => setTimeout(resolve, 30000)); // Wait 30 seconds
-            attempts++;
-            
-            console.log(`Checking for boarding UTXOs (attempt ${attempts}/${maxAttempts})...`);
-            setBoardProgress(`Step 2/2: Checking for confirmation (${attempts * 30}s elapsed)...`);
-            
-            boardingUtxos = await wallet.wallet.getBoardingUtxos();
-            
-            if (boardingUtxos && boardingUtxos.length > 0) {
-              console.log(`✅ Boarding UTXO confirmed! Found ${boardingUtxos.length} UTXO(s)`);
-              setBoardProgress('Step 2/2: Confirmed! Now boarding to Arkade L2...');
-              break;
+          // Show toast with mempool link
+          const { getMempoolUrl } = await import('@/lib/mempool');
+          toast.show(
+            `Step 1/2: Transfer sent to boarding address! Track confirmation on mempool.`,
+            'success',
+            10000,
+            {
+              action: {
+                label: 'View TX',
+                onClick: () => window.open(getMempoolUrl(sendTx), '_blank', 'noopener,noreferrer')
+              }
             }
-          }
+          );
           
-          if (!boardingUtxos || boardingUtxos.length === 0) {
-            throw new Error(
-              `Transaction sent but not confirmed yet.\n\n` +
-              `TX: ${sendTx}\n\n` +
-              `Please wait a bit longer and click "Board to Arkade" again to complete the process.`
-            );
-          }
+          // Show success message with instructions
+          setBoardSuccess(
+            `✅ Step 1/2 Complete!\n\n` +
+            `Sent ${balances.taproot.toLocaleString()} sats to boarding address.\n\n` +
+            `Transaction ID: ${sendTx}\n\n` +
+            `⏳ Next Steps:\n` +
+            `1. Wait for Bitcoin network confirmation (~10-60 minutes)\n` +
+            `2. Track your transaction on mempool (link in toast notification)\n` +
+            `3. Come back and click "Board to Arkade" again to complete the boarding\n\n` +
+            `The system will automatically detect the confirmed UTXO and finish boarding to Arkade L2.`
+          );
+          setBoardProgress('');
+          setBoarding(false);
+          return; // Exit early - user will come back later
         } catch (error) {
           console.error('Failed to send to boarding address:', error);
           throw new Error(`Failed to send to boarding address: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -387,8 +385,19 @@ export default function WalletHeader() {
         throw new Error('Wallet not connected');
       }
 
-      if (!withdrawDestination) {
-        throw new Error('Please enter a destination address');
+      // Determine destination address: boarding address or user input
+      let destinationAddress = withdrawDestination;
+      
+      if (withdrawToBoardingAddress) {
+        if (!addresses?.boarding) {
+          throw new Error('Boarding address not available');
+        }
+        destinationAddress = addresses.boarding;
+        console.log('🔄 Withdrawing to boarding address for easy re-boarding:', destinationAddress);
+      }
+
+      if (!destinationAddress) {
+        throw new Error('Please enter a destination address or enable "Withdraw to Boarding Address"');
       }
 
       if (withdrawMethod === 'unilateral') {
@@ -443,13 +452,13 @@ export default function WalletHeader() {
 
       setWithdrawProgress('Submitting withdrawal request...');
       console.log('Calling offboard with:', {
-        withdrawDestination,
+        destinationAddress,
         feeInfo,
         amount: amount?.toString()
       });
 
       const txid = await ramps.offboard(
-        withdrawDestination,
+        destinationAddress,
         feeInfo,
         amount,
         (event: any) => {
@@ -474,7 +483,13 @@ export default function WalletHeader() {
         }
       );
 
-      setWithdrawSuccess(`Withdrawal successful! Transaction ID: ${txid}`);
+      const successMessage = withdrawToBoardingAddress
+        ? `✅ Withdrawal successful! Transaction ID: ${txid}\n\n` +
+          `🔄 Your funds are being sent to your boarding address.\n\n` +
+          `💡 Once confirmed, click "Board to Arkade" to complete one-step re-boarding!`
+        : `Withdrawal successful! Transaction ID: ${txid}`;
+      
+      setWithdrawSuccess(successMessage);
       setWithdrawProgress('Complete!');
       
       // Show mempool link toast
@@ -494,6 +509,7 @@ export default function WalletHeader() {
       setWithdrawDestination('');
       setWithdrawAmount('');
       setWithdrawAll(false);
+      setWithdrawToBoardingAddress(false);
       
       // Refresh balances after delay
       setTimeout(async () => {
@@ -1372,8 +1388,30 @@ export default function WalletHeader() {
                   value={withdrawDestination}
                   onChange={(e) => setWithdrawDestination(e.target.value)}
                   placeholder="bc1q... or bc1p..."
-                  className="w-full bg-white text-gray-900 px-4 py-3 rounded-lg border border-blue-300 focus:border-blue-500 focus:outline-none"
+                  disabled={withdrawToBoardingAddress}
+                  className="w-full bg-white text-gray-900 px-4 py-3 rounded-lg border border-blue-300 focus:border-blue-500 focus:outline-none disabled:bg-gray-100 disabled:text-gray-500"
                 />
+                
+                {/* Withdraw to Boarding Address Option */}
+                <label className="flex items-start gap-3 mt-3 p-3 bg-green-50 border border-green-200 rounded-lg cursor-pointer hover:bg-green-100 transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={withdrawToBoardingAddress}
+                    onChange={(e) => setWithdrawToBoardingAddress(e.target.checked)}
+                    className="mt-1 w-4 h-4"
+                  />
+                  <div className="flex-1">
+                    <span className="text-sm font-semibold text-green-900">🔄 Withdraw to my Boarding Address</span>
+                    <p className="text-xs text-green-700 mt-1">
+                      Enable <strong>one-step re-boarding!</strong> Your funds will go to the boarding address, ready to be boarded back to Arkade L2 with just one click (no manual transfer needed).
+                    </p>
+                    {withdrawToBoardingAddress && addresses?.boarding && (
+                      <p className="text-xs text-green-800 mt-2 font-mono break-all bg-white/50 p-2 rounded">
+                        📍 {addresses.boarding}
+                      </p>
+                    )}
+                  </div>
+                </label>
               </div>
 
               {/* Amount */}
