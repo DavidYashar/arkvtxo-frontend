@@ -235,32 +235,42 @@ export default function WalletHeader() {
       }
 
       setBoardProgress('Checking for boarding UTXOs...');
-      console.log('Boarding Taproot Bitcoin to Arkade L2...');
+      console.log('🔍 Starting boarding process...');
       console.log('Taproot balance:', balances.taproot, 'sats');
-      console.log('Using wallet:', wallet);
-      console.log('Arkade wallet available:', wallet.wallet ? 'yes' : 'no');
       
       // Import Ramps for onboarding
       const { Ramps } = await import('@arkade-os/sdk');
       const ramps = new Ramps(wallet.wallet);
       
       // Get boarding UTXOs to check if any exist
-      const boardingUtxos = await wallet.wallet.getBoardingUtxos();
-      console.log('Boarding UTXOs found:', boardingUtxos);
+      let boardingUtxos;
+      let boardingAddress;
+      
+      try {
+        boardingUtxos = await wallet.wallet.getBoardingUtxos();
+        boardingAddress = await wallet.wallet.getBoardingAddress();
+        console.log('📦 Boarding UTXOs:', boardingUtxos);
+        console.log('📍 Boarding address:', boardingAddress);
+      } catch (error) {
+        console.error('Failed to get boarding info:', error);
+        throw new Error(`Failed to get boarding information: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      }
       
       if (!boardingUtxos || boardingUtxos.length === 0) {
         // No boarding UTXOs - need to send Bitcoin to boarding address first
-        const boardingAddress = await wallet.wallet.getBoardingAddress();
         throw new Error(
-          `No boarding UTXOs found.\n\n` +
-          `Your ${balances.taproot.toLocaleString()} sats are in your Taproot address, not the boarding address.\n\n` +
-          `To board to Arkade:\n` +
-          `1. Send Bitcoin to your boarding address:\n${boardingAddress}\n\n` +
-          `2. Wait for confirmation\n` +
-          `3. Click "Board to Arkade" again\n\n` +
-          `Alternative: Use "Send Bitcoin" to send directly to your Arkade offchain address for instant VTXOs.`
+          `❌ No boarding UTXOs found.\n\n` +
+          `Your ${balances.taproot.toLocaleString()} sats are in your Taproot address, NOT the boarding address.\n\n` +
+          `📋 Boarding Process (2 steps required):\n\n` +
+          `Step 1: Send Bitcoin to boarding address:\n${boardingAddress}\n\n` +
+          `Step 2: Wait for confirmation (~10 min)\n\n` +
+          `Step 3: Click "Board to Arkade" again\n\n` +
+          `💡 EASIER ALTERNATIVE:\n` +
+          `Use "Send Bitcoin" to send directly to your Arkade offchain address (${addresses?.arkade?.slice(0, 30)}...) for instant VTXOs without the 2-step boarding process!`
         );
       }
+      
+      console.log(`✅ Found ${boardingUtxos.length} boarding UTXO(s), proceeding with onboard...`);
       
       // Call onboard() to board ALL boarding UTXOs into Arkade VTXOs
       setBoardProgress('Initiating onboard transaction...');
