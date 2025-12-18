@@ -22,6 +22,7 @@ interface BalanceInfo {
   arkade: number;
   segwit: number;
   taproot: number;
+  boarding: number;
 }
 
 export default function WalletHeader() {
@@ -29,7 +30,7 @@ export default function WalletHeader() {
   const toast = useToast();
   const [connected, setConnected] = useState(false);
   const [addresses, setAddresses] = useState<AddressInfo | null>(null);
-  const [balances, setBalances] = useState<BalanceInfo>({ arkade: 0, segwit: 0, taproot: 0 });
+  const [balances, setBalances] = useState<BalanceInfo>({ arkade: 0, segwit: 0, taproot: 0, boarding: 0 });
   const [connecting, setConnecting] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [showRestore, setShowRestore] = useState(false);
@@ -91,7 +92,7 @@ export default function WalletHeader() {
       }
       const bals = await getAllBalances();
       if (bals) {
-        setBalances({ arkade: bals.arkade, segwit: bals.segwit, taproot: bals.taproot });
+        setBalances({ arkade: bals.arkade, segwit: bals.segwit, taproot: bals.taproot, boarding: bals.boarding || 0 });
       }
     }
   };
@@ -175,7 +176,7 @@ export default function WalletHeader() {
         disconnectWallet();
         setConnected(false);
         setAddresses(null);
-        setBalances({ arkade: 0, segwit: 0, taproot: 0 });
+        setBalances({ arkade: 0, segwit: 0, taproot: 0, boarding: 0 });
         toast.show('Wallet disconnected successfully', 'info', 3000);
       }
     );
@@ -201,7 +202,7 @@ export default function WalletHeader() {
         const bals = await getAllBalances();
         console.log('Fresh balances:', bals);
         if (bals) {
-          setBalances({ arkade: bals.arkade, segwit: bals.segwit, taproot: bals.taproot });
+          setBalances({ arkade: bals.arkade, segwit: bals.segwit, taproot: bals.taproot, boarding: bals.boarding || 0 });
         }
       } catch (error) {
         console.error('Error refreshing balances:', error);
@@ -245,13 +246,13 @@ export default function WalletHeader() {
       }
 
       // Check if there's balance to board
-      if (balances.taproot === 0) {
-        throw new Error('No Taproot balance available to board');
+      if (balances.boarding === 0) {
+        throw new Error('No Bitcoin in boarding address available to board');
       }
 
       setBoardProgress('Checking for boarding UTXOs...');
       console.log('🔍 Starting automated boarding process...');
-      console.log('Taproot balance:', balances.taproot, 'sats');
+      console.log('Boarding balance:', balances.boarding, 'sats');
       
       // Import Ramps for onboarding
       const { Ramps } = await import('@arkade-os/sdk');
@@ -291,7 +292,7 @@ export default function WalletHeader() {
       const txid = await ramps.onboard();
       
       console.log('Boarding transaction sent:', txid);
-      setBoardSuccess(`Boarding successful! Transaction ID: ${txid}\n\nAll ${balances.taproot.toLocaleString()} sats are being moved to Arkade L2.\n\nWait ~10 minutes for confirmation. The balance will update automatically.`);
+      setBoardSuccess(`Boarding successful! Transaction ID: ${txid}\n\nAll ${balances.boarding.toLocaleString()} sats are being moved to Arkade L2.\n\nWait ~10 minutes for confirmation. The balance will update automatically.`);
       setBoardProgress('Complete! Waiting for confirmation...');
       
       // Show mempool link toast
@@ -919,11 +920,11 @@ export default function WalletHeader() {
                   <div className="bg-gradient-to-br from-blue-200 to-blue-300 border border-blue-500 rounded-xl p-4">
                     <div className="text-xs sm:text-sm text-blue-950 font-medium mb-1">Taproot (L1)</div>
                     <div className="flex flex-col sm:flex-row sm:items-baseline sm:gap-2">
-                      <div className="text-2xl sm:text-3xl font-bold text-blue-950 break-all">{balances.taproot.toLocaleString()}</div>
+                      <div className="text-2xl sm:text-3xl font-bold text-blue-950 break-all">{balances.boarding.toLocaleString()}</div>
                       <div className="text-xs text-blue-900">sats</div>
                     </div>
                     <div className="text-xs text-blue-800 mt-1 font-mono">
-                      ≈ {(balances.taproot / 100_000_000).toFixed(8)} BTC
+                      ≈ {(balances.boarding / 100_000_000).toFixed(8)} BTC
                     </div>
                   </div>
                 </div>
@@ -1142,10 +1143,10 @@ export default function WalletHeader() {
               <div className="bg-green-50 rounded-lg p-4">
                 <p className="text-gray-600 text-sm mb-1">Bitcoin in Boarding Address</p>
                 <p className="text-2xl font-bold text-gray-900">
-                  {(balances.taproot / 100_000_000).toFixed(8)} BTC
+                  {(balances.boarding / 100_000_000).toFixed(8)} BTC
                 </p>
                 <p className="text-gray-600 text-sm mt-1">
-                  {balances.taproot.toLocaleString()} sats
+                  {balances.boarding.toLocaleString()} sats
                 </p>
               </div>
 
@@ -1190,7 +1191,7 @@ export default function WalletHeader() {
               <div className="flex gap-3">
                 <button
                   onClick={handleBoardSubmit}
-                  disabled={boarding || balances.taproot === 0}
+                  disabled={boarding || balances.boarding === 0}
                   className="flex-1 bg-green-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
                 >
                   {boarding ? (
@@ -1201,7 +1202,7 @@ export default function WalletHeader() {
                   ) : (
                     <>
                       <ArrowUpFromLine size={20} />
-                      Board All {balances.taproot > 0 ? `(${balances.taproot.toLocaleString()} sats)` : ''}
+                      Board All {balances.boarding > 0 ? `(${balances.boarding.toLocaleString()} sats)` : ''}
                     </>
                   )}
                 </button>

@@ -375,6 +375,7 @@ export async function getAllBalances(): Promise<{
   arkade: number;
   segwit: number;
   taproot: number;
+  boarding: number;
   total: number;
 } | null> {
   console.log('getAllBalances called');
@@ -414,11 +415,24 @@ export async function getAllBalances(): Promise<{
     const taprootUtxos = await bitcoinClient.getUTXOs(taprootAddress);
     const taprootSats = taprootUtxos.reduce((sum, utxo) => sum + utxo.value, 0);
     
+    // 4. Boarding address balance - Get from Arkade wallet
+    let boardingSats = 0;
+    try {
+      const boardingAddress = await arkadeWallet.getBoardingAddress();
+      console.log('Checking balance for Boarding address:', boardingAddress);
+      const boardingUtxos = await bitcoinClient.getUTXOs(boardingAddress);
+      boardingSats = boardingUtxos.reduce((sum, utxo) => sum + utxo.value, 0);
+      console.log('Boarding UTXOs:', boardingUtxos, 'Total:', boardingSats);
+    } catch (error) {
+      console.error('Failed to get boarding balance:', error);
+    }
+    
     const result = {
       arkade: arkadeSats,
       segwit: segwitSats,
       taproot: taprootSats,
-      total: arkadeSats + segwitSats + taprootSats,
+      boarding: boardingSats,
+      total: arkadeSats + segwitSats + taprootSats + boardingSats,
     };
     console.log('getAllBalances result:', result);
     return result;
