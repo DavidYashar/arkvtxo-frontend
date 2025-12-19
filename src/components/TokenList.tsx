@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { Coins, RefreshCw, X, Send as SendIcon, Info, Lock } from 'lucide-react';
 import { getWallet, getWalletAsync } from '@/lib/wallet';
+import { getTokens as getStoredTokens } from '@/lib/tokenStorage';
 import type { TokenBalance } from '@arkade-token/sdk';
 
 interface TokenDetails {
@@ -12,6 +13,7 @@ interface TokenDetails {
   totalSupply: string;
   decimals: number;
   creator: string;
+  status?: string;
   createdAt: string;
   createdInTx: string;
 }
@@ -28,6 +30,34 @@ export default function TokenList() {
   const [isWhitelisted, setIsWhitelisted] = useState<boolean | null>(null);
   const [userAddress, setUserAddress] = useState<string>('');
 
+  const mergeWithLocallyCreatedTokens = (balances: TokenBalance[], walletAddr: string): TokenBalance[] => {
+    if (!walletAddr) return balances;
+
+    // LocalStorage is used as a temporary UX cache for newly created tokens.
+    // We merge them into the balances list so the creator sees the full supply immediately.
+    const stored = getStoredTokens().filter((t) => t.creator === walletAddr);
+    if (stored.length === 0) return balances;
+
+    const byTokenId = new Map<string, TokenBalance>();
+    for (const bal of balances) byTokenId.set(bal.tokenId, bal);
+
+    for (const t of stored) {
+      if (byTokenId.has(t.tokenId)) continue; // Prefer real indexer balances
+      try {
+        byTokenId.set(t.tokenId, {
+          address: walletAddr,
+          tokenId: t.tokenId,
+          balance: BigInt(t.totalSupply),
+          symbol: t.symbol,
+        });
+      } catch {
+        // Ignore malformed entries
+      }
+    }
+
+    return Array.from(byTokenId.values());
+  };
+
   const formatTokenAmount = (amount: string | bigint, decimals: number) => {
     const num = BigInt(amount);
     const divisor = BigInt(10 ** decimals);
@@ -41,6 +71,22 @@ export default function TokenList() {
     // Pad remainder with leading zeros
     const decimalPart = remainder.toString().padStart(decimals, '0');
     return `${whole.toString()}.${decimalPart}`;
+  };
+
+  const formatTokenStatus = (status?: string): string => {
+    if (!status) return 'Unknown';
+    switch (status) {
+      case 'pending':
+        return 'Pending (Bitcoin confirmations)';
+      case 'awaiting_settlement':
+        return 'Awaiting settlement (ASP)';
+      case 'confirmed':
+        return 'Confirmed';
+      case 'failed':
+        return 'Failed';
+      default:
+        return status;
+    }
   };
 
   const checkWhitelist = async () => {
@@ -69,15 +115,26 @@ export default function TokenList() {
 
     try {
       setLoading(true);
+
+      // Determine current wallet address (used for local created-token merge).
+      const addr = await wallet.getAddress();
+      setUserAddress(addr);
       
       // Load balances from indexer API (this is address-specific)
       const balances = await wallet.getTokenBalances();
-      setTokens(balances);
+      setTokens(mergeWithLocallyCreatedTokens(balances, addr));
       console.log('Loaded token balances from indexer:', balances.length, 'tokens');
     } catch (error) {
       console.error('Failed to load tokens from indexer:', error);
-      // Don't fallback to localStorage - it's not address-specific
-      setTokens([]);
+      // Still show locally-created tokens for this wallet, if available.
+      try {
+        const wallet = await getWalletAsync();
+        const addr = wallet ? await wallet.getAddress() : '';
+        setUserAddress(addr);
+        setTokens(mergeWithLocallyCreatedTokens([], addr));
+      } catch {
+        setTokens([]);
+      }
     } finally {
       setLoading(false);
     }
@@ -90,6 +147,17 @@ export default function TokenList() {
     // Refresh every 10 seconds
     const interval = setInterval(loadTokens, 10000);
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    // If a token is created in another tab, refresh My Tokens list.
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'arkade_tokens') {
+        loadTokens();
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
   }, []);
 
   const handleShowDetails = async (token: TokenBalance) => {
@@ -261,6 +329,11 @@ export default function TokenList() {
 
             {tokenDetails ? (
               <div className="space-y-4">
+                <div className="bg-blue-50 p-4 rounded-lg">
+                  <p className="text-xs text-gray-600 mb-1">Status</p>
+                  <p className="text-gray-900 font-semibold">{formatTokenStatus(tokenDetails.status)}</p>
+                </div>
+
                 <div className="bg-blue-50 p-4 rounded-lg">
                   <p className="text-xs text-gray-600 mb-1">Name</p>
                   <p className="text-gray-900 font-semibold">{tokenDetails.name}</p>

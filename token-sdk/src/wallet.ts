@@ -205,8 +205,9 @@ export class TokenWallet {
       console.log(`Track at: https://mempool.space/tx/${tokenId}`);
       console.log('\n Backend will:');
       console.log('   1. Monitor for Bitcoin confirmation');
-      console.log('   2. Complete Arkade Layer 2 settlement');
-      console.log('   3. Update token status to confirmed');
+      console.log('   2. Notify your wallet when confirmed');
+      console.log('   3. Your wallet settles with ASP (non-custodial)');
+      console.log('   4. Backend finalizes token as confirmed');
       
       return tokenId;
     } catch (error) {

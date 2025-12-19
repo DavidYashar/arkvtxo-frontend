@@ -20,8 +20,18 @@ export class TokenProvider implements ITokenProvider {
     }
   }
 
+  private buildHeaders(extra?: Record<string, string>): Record<string, string> {
+    const headers: Record<string, string> = { ...(extra || {}) };
+    if (this.apiKey && !headers['x-api-key'] && !headers['X-API-Key']) {
+      headers['x-api-key'] = this.apiKey;
+    }
+    return headers;
+  }
+
   async getToken(tokenId: string): Promise<TokenMetadata> {
-    const response = await fetch(`${this.baseUrl}/api/tokens/${tokenId}`);
+    const response = await fetch(`${this.baseUrl}/api/tokens/${tokenId}`, {
+      headers: this.buildHeaders({ Accept: 'application/json' }),
+    });
     
     if (!response.ok) {
       throw new Error(`Failed to fetch token: ${response.statusText}`);
@@ -42,7 +52,10 @@ export class TokenProvider implements ITokenProvider {
 
   async getBalance(address: string, tokenId: string): Promise<bigint> {
     const response = await fetch(
-      `${this.baseUrl}/api/balances/${address}/${tokenId}`
+      `${this.baseUrl}/api/balances/${address}/${tokenId}`,
+      {
+        headers: this.buildHeaders({ Accept: 'application/json' }),
+      }
     );
     
     if (!response.ok) {
@@ -59,7 +72,9 @@ export class TokenProvider implements ITokenProvider {
   async getBalances(address: string): Promise<TokenBalance[]> {
     const url = `${this.baseUrl}/api/balances/${address}`;
     console.log('📡 TokenProvider.getBalances - Fetching from:', url);
-    const response = await fetch(url);
+    const response = await fetch(url, {
+      headers: this.buildHeaders({ Accept: 'application/json' }),
+    });
     
     if (!response.ok) {
       throw new Error(`Failed to fetch balances: ${response.statusText}`);
@@ -84,7 +99,9 @@ export class TokenProvider implements ITokenProvider {
       : `${this.baseUrl}/api/transfers/${address}`;
     
     console.log('📡 TokenProvider.getTransfers - Fetching from:', url);
-    const response = await fetch(url);
+    const response = await fetch(url, {
+      headers: this.buildHeaders({ Accept: 'application/json' }),
+    });
     
     if (!response.ok) {
       throw new Error(`Failed to fetch transfers: ${response.statusText}`);
@@ -105,7 +122,10 @@ export class TokenProvider implements ITokenProvider {
 
   async getTransaction(txid: string): Promise<TokenTransfer | null> {
     const response = await fetch(
-      `${this.baseUrl}/api/transactions/${txid}`
+      `${this.baseUrl}/api/transactions/${txid}`,
+      {
+        headers: this.buildHeaders({ Accept: 'application/json' }),
+      }
     );
     
     if (!response.ok) {
@@ -160,13 +180,11 @@ export class TokenProvider implements ITokenProvider {
         'Content-Type': 'application/json',
       };
       
-      if (this.apiKey) {
-        headers['x-api-key'] = this.apiKey;
-      }
+      const authHeaders = this.buildHeaders(headers);
       
       const response = await fetch(url, {
         method: 'POST',
-        headers: headers,
+        headers: authHeaders,
         body: JSON.stringify(params),
       });
 
@@ -198,9 +216,7 @@ export class TokenProvider implements ITokenProvider {
   }): Promise<void> {
     const response = await fetch(`${this.baseUrl}/api/transfers`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: this.buildHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(params),
     });
 

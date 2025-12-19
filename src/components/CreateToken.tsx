@@ -2,13 +2,15 @@
 
 import { useState, useEffect } from 'react';
 import { PlusCircle, Lock } from 'lucide-react';
-import { getWallet, getWalletAsync, canCreateToken } from '@/lib/wallet';
+import { getWallet, getWalletAsync, canCreateToken, getArkadeWallet } from '@/lib/wallet';
 import { useToast } from '@/lib/toast';
+import { getWebSocketToken, apiFetch } from '@/lib/api';
 import { getMempoolUrl, getNetworkName } from '@/lib/mempool';
 import FeeSelection from './FeeSelection';
 
 export default function CreateToken() {
   const toast = useToast();
+  const SELF_SEND_SATS = 1000;
   const [formData, setFormData] = useState({
     name: '',
     symbol: '',
@@ -60,6 +62,16 @@ export default function CreateToken() {
   // WebSocket listener for token confirmation
   useEffect(() => {
     let socket: any = null;
+    const handledSettlements = new Set<string>();
+
+    const waitForWalletReady = async (maxRetries: number, delayMs: number) => {
+      for (let i = 0; i < maxRetries; i++) {
+        const wallet = await getWalletAsync();
+        if (wallet) return wallet;
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+      return null;
+    };
 
     const setupWebSocket = async () => {
       try {
@@ -71,15 +83,20 @@ export default function CreateToken() {
 
         const address = await wallet.getAddress();
         const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3001';
+        const wsToken = getWebSocketToken();
         
         console.log('🔌 Setting up WebSocket connection to:', indexerUrl);
         console.log('📍 Wallet address:', address);
+        console.log('🔑 WebSocket token length:', wsToken.length);
         
         // Dynamic import to avoid SSR issues
         const { io } = await import('socket.io-client');
         socket = io(indexerUrl, {
           transports: ['websocket', 'polling'],
           reconnection: true,
+          auth: {
+            token: wsToken,
+          },
         });
 
         socket.on('connect', () => {
@@ -89,7 +106,7 @@ export default function CreateToken() {
         });
 
         socket.on('connect_error', (error: any) => {
-          console.error('❌ WebSocket connection error:', error);
+          console.error('❌ WebSocket connection error:', error, { indexerUrl, tokenLength: wsToken.length });
         });
 
         socket.on('token-confirmed', (data: any) => {
@@ -105,6 +122,74 @@ export default function CreateToken() {
               }
             }
           );
+        });
+
+        // Bitcoin confirmed -> client performs an ASP-side tx (1000 sats to self), then finalize with backend.
+        // Fully automatic (no manual user action in-app). Wallet/provider may still require its own approval.
+        socket.on('token-bitcoin-confirmed', async (data: any) => {
+          console.log('✅ Bitcoin confirmed event received!', data);
+
+          if (!data?.tokenId) return;
+          if (handledSettlements.has(data.tokenId)) {
+            console.log('↩️ Settlement already handled for token:', data.tokenId);
+            return;
+          }
+
+          handledSettlements.add(data.tokenId);
+
+          try {
+            toast.show(data.message || 'Bitcoin confirmed. Finalizing via ASP self-send...', 'info', 6000);
+
+            // Always compute the current wallet address at the time of the event.
+            // This guarantees sender/receiver correctness even if the wallet changes after socket setup.
+            const wallet = await waitForWalletReady(20, 500);
+            if (!wallet) {
+              throw new Error('Wallet not ready (timed out)');
+            }
+
+            const currentAddress = await wallet.getAddress();
+            const issuerAddress = (data?.issuerAddress as string | undefined) || address;
+
+            // Safety guard: event should be for the connected wallet.
+            // If it doesn't match, do nothing (prevents accidental sends to a third-party address).
+            if (issuerAddress && issuerAddress !== currentAddress) {
+              console.warn('⚠️ Ignoring token-bitcoin-confirmed for different wallet', {
+                tokenId: data?.tokenId,
+                issuerAddress,
+                currentAddress,
+              });
+              handledSettlements.delete(data.tokenId);
+              return;
+            }
+
+            const arkadeWallet = getArkadeWallet();
+            if (!arkadeWallet) {
+              throw new Error('Arkade wallet not ready');
+            }
+
+            // Instead of settle(), we create an ASP-side tx by sending a small amount to self.
+            // This returns an Arkade/ASP txid that the backend can verify via the ASP indexer.
+            console.log(`💸 Sending ${SELF_SEND_SATS} sats to self via arkadeWallet.sendBitcoin() ...`, {
+              from: currentAddress,
+              to: currentAddress,
+            });
+            const txid = await arkadeWallet.sendBitcoin({
+              address: currentAddress,
+              amount: SELF_SEND_SATS,
+            });
+            console.log('✅ arkadeWallet.sendBitcoin() returned txid:', txid);
+
+            const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3001';
+            await apiFetch(`${indexerUrl}/api/tokens/${data.tokenId}/settle`, {
+              method: 'POST',
+              body: JSON.stringify({ txid }),
+            });
+
+            console.log('✅ Token finalization completed with backend');
+          } catch (error: any) {
+            console.error('❌ Finalization step failed:', error);
+            toast.show(`Finalization failed: ${error?.message || 'Unknown error'}`, 'error', 8000);
+          }
         });
 
         socket.on('disconnect', () => {

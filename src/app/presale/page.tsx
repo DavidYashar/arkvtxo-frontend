@@ -58,6 +58,13 @@ export default function PresalePage() {
   } | null>(null);
   const [paymentCountdown, setPaymentCountdown] = useState<number>(15);
   const [sendingPayment, setSendingPayment] = useState(false);
+
+  useEffect(() => {
+    wsService.connect();
+    return () => {
+      wsService.disconnect();
+    };
+  }, []);
   const [rejectedRequestIds, setRejectedRequestIds] = useState<Set<string>>(new Set());
 
   // Helper function to format token amounts with decimals

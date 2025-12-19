@@ -1,11 +1,11 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Wallet, Store, Coins, Home, Copy, RefreshCw, Eye, ArrowDownToLine, ArrowUpFromLine, X, AlertCircle, Loader2, CheckCircle2 } from 'lucide-react';
 import { initializeWallet, getWallet, disconnectWallet, exportCredentials, getAllBalances, getAllAddresses, getArkadeWallet } from '@/lib/wallet';
-import { Ramps } from '@arkade-os/sdk';
+import { Ramps, VtxoManager } from '@arkade-os/sdk';
 import { useToast } from '@/lib/toast';
 import { getMempoolUrl, getNetworkName } from '@/lib/mempool';
 import FeeSelection from './FeeSelection';
@@ -58,9 +58,310 @@ export default function WalletHeader() {
   const [unrollProgress, setUnrollProgress] = useState<string>('');
   const [showUnrollInfo, setShowUnrollInfo] = useState(false);
 
+  const [withdrawVtxos, setWithdrawVtxos] = useState<any[]>([]);
+  const [withdrawVtxosLoading, setWithdrawVtxosLoading] = useState(false);
+  const [withdrawVtxosError, setWithdrawVtxosError] = useState<string | null>(null);
+
+  // Arkade SDK v0.3.7 uses a millisecond threshold for renewal checks.
+  // Default is 24h; we keep the same semantics: "about to expire".
+  const VTXO_RENEW_THRESHOLD_MS = 24 * 60 * 60 * 1000;
+  const VTXO_AUTO_RENEW_INTERVAL_MS = 24 * 60 * 60 * 1000; // daily (while app is open)
+
+  const vtxoManagerRef = useRef<any | null>(null);
+  const autoRenewIntervalRef = useRef<number | null>(null);
+  const autoRenewRunningRef = useRef(false);
+
+  const [autoRenewEnabled] = useState(true);
+  const [autoRenewChecking, setAutoRenewChecking] = useState(false);
+  const [autoRenewLastCheckedAt, setAutoRenewLastCheckedAt] = useState<number | null>(null);
+  const [autoRenewLastRenewTxid, setAutoRenewLastRenewTxid] = useState<string | null>(null);
+  const [autoRenewLastExpiringCount, setAutoRenewLastExpiringCount] = useState<number | null>(null);
+  const [autoRenewError, setAutoRenewError] = useState<string | null>(null);
+
+  const [recoverableChecking, setRecoverableChecking] = useState(false);
+  const [recoverableRecovering, setRecoverableRecovering] = useState(false);
+  const [recoverableError, setRecoverableError] = useState<string | null>(null);
+  const [recoverableBalance, setRecoverableBalance] = useState<{
+    recoverable: bigint;
+    subdust: bigint;
+    includesSubdust: boolean;
+    vtxoCount: number;
+  } | null>(null);
+  const [recoverableProgress, setRecoverableProgress] = useState<string>('');
+  const [recoverableTxid, setRecoverableTxid] = useState<string | null>(null);
+
+  const COLLAB_EXIT_MAX_DAYS_REMAINING = 29;
+  const COLLAB_EXIT_MAX_MS_REMAINING = COLLAB_EXIT_MAX_DAYS_REMAINING * 24 * 60 * 60 * 1000;
+
+  const formatNumberLike = (v: bigint | number | null | undefined): string => {
+    if (v === null || v === undefined) return '0';
+    const s = typeof v === 'bigint' ? v.toString() : Math.floor(v).toString();
+    return s.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  };
+
+  const formatDateTime = (ms: number | null): string => {
+    if (!ms) return 'Never';
+    try {
+      return new Date(ms).toLocaleString();
+    } catch {
+      return 'Unknown';
+    }
+  };
+
+  const getOrCreateVtxoManager = (): any => {
+    if (vtxoManagerRef.current) return vtxoManagerRef.current;
+    const arkadeWallet = getArkadeWallet();
+    if (!arkadeWallet) {
+      throw new Error('Wallet not connected');
+    }
+    vtxoManagerRef.current = new VtxoManager(arkadeWallet, {
+      enabled: true,
+      thresholdMs: VTXO_RENEW_THRESHOLD_MS,
+    });
+    return vtxoManagerRef.current;
+  };
+
+  const checkAndAutoRenewVtxos = async (source: 'login' | 'interval' | 'manual') => {
+    if (!autoRenewEnabled) return;
+    if (autoRenewRunningRef.current) return;
+
+    autoRenewRunningRef.current = true;
+    setAutoRenewError(null);
+    setAutoRenewChecking(true);
+    try {
+      const manager = getOrCreateVtxoManager();
+      const expiring = await manager.getExpiringVtxos();
+
+      setAutoRenewLastCheckedAt(Date.now());
+      setAutoRenewLastExpiringCount(Array.isArray(expiring) ? expiring.length : 0);
+
+      if (Array.isArray(expiring) && expiring.length > 0) {
+        const txid = await manager.renewVtxos();
+        setAutoRenewLastRenewTxid(txid || null);
+
+        toast.show(
+          `Auto-renew submitted (${expiring.length} VTXO(s))${txid ? `: ${txid.slice(0, 10)}...` : ''}`,
+          'info',
+          7000
+        );
+
+        // Refresh UI state after renewal.
+        await handleRefresh();
+        if (showWithdrawModal) {
+          void loadWithdrawVtxos();
+          void checkRecoverableBalance();
+        }
+      } else if (source === 'manual') {
+        toast.show('No expiring VTXOs detected', 'success', 2500);
+      }
+    } catch (e: any) {
+      const message = e?.message || 'Failed to check/renew VTXOs';
+      setAutoRenewError(message);
+      if (source === 'manual' || source === 'login') {
+        toast.show(message, 'warning', 6000);
+      }
+    } finally {
+      setAutoRenewChecking(false);
+      autoRenewRunningRef.current = false;
+    }
+  };
+
+  const checkRecoverableBalance = async () => {
+    setRecoverableError(null);
+    setRecoverableChecking(true);
+    try {
+      const manager = getOrCreateVtxoManager();
+      const balance = await manager.getRecoverableBalance();
+
+      const normalized = {
+        recoverable: BigInt(balance?.recoverable ?? 0),
+        subdust: BigInt(balance?.subdust ?? 0),
+        includesSubdust: Boolean(balance?.includesSubdust),
+        vtxoCount: Number(balance?.vtxoCount ?? 0),
+      };
+
+      setRecoverableBalance(normalized);
+
+      if (normalized.recoverable > 0n) {
+        toast.show(
+          `Recoverable balance detected: ${formatNumberLike(normalized.recoverable)} sats`,
+          'info',
+          6000
+        );
+      }
+    } catch (e: any) {
+      setRecoverableBalance(null);
+      setRecoverableError(e?.message || 'Failed to check recoverable balance');
+    } finally {
+      setRecoverableChecking(false);
+    }
+  };
+
+  const recoverVtxosNow = async () => {
+    setRecoverableError(null);
+    setRecoverableProgress('');
+    setRecoverableTxid(null);
+    setRecoverableRecovering(true);
+    try {
+      const manager = getOrCreateVtxoManager();
+
+      setRecoverableProgress('Starting recovery...');
+      const txid = await manager.recoverVtxos((event: any) => {
+        const type = event?.type ? String(event.type) : 'EVENT';
+        setRecoverableProgress(type);
+      });
+
+      setRecoverableTxid(txid || null);
+      toast.show('Recovery submitted successfully', 'success', 6000);
+
+      await handleRefresh();
+      if (showWithdrawModal) {
+        void loadWithdrawVtxos();
+      }
+      void checkRecoverableBalance();
+    } catch (e: any) {
+      setRecoverableError(e?.message || 'Recovery failed');
+    } finally {
+      setRecoverableRecovering(false);
+    }
+  };
+
+  const getVtxoExpiryMs = (vtxo: any): number | null => {
+    const virtualStatus = vtxo?.virtualStatus || {};
+    const candidate =
+      virtualStatus?.batchExpiry ??
+      virtualStatus?.expiry ??
+      vtxo?.batchExpiry ??
+      vtxo?.expiry;
+
+    if (candidate === null || candidate === undefined) return null;
+    if (typeof candidate === 'number') return Number.isFinite(candidate) ? candidate : null;
+    if (typeof candidate === 'bigint') return Number(candidate);
+    if (typeof candidate === 'string') {
+      const n = Number(candidate);
+      return Number.isFinite(n) ? n : null;
+    }
+    return null;
+  };
+
+  const formatTimeLeft = (expiryMs: number): string => {
+    const msLeft = expiryMs - Date.now();
+    if (!Number.isFinite(msLeft)) return 'Unknown';
+    if (msLeft <= 0) return 'Expired';
+
+    const hours = Math.floor(msLeft / (1000 * 60 * 60));
+    const days = Math.floor(hours / 24);
+    const remHours = hours % 24;
+
+    if (days <= 0) return `${hours}h`;
+    if (days < 3) return `${days}d ${remHours}h`;
+    return `${days}d`;
+  };
+
+  const isSpendableVtxo = (vtxo: any): boolean => {
+    return vtxo?.virtualStatus?.state === 'settled' && !vtxo?.isSpent;
+  };
+
+  const isCollaborativeExitEligibleByExpiry = (vtxo: any): { eligible: boolean; reason: string } => {
+    if (!isSpendableVtxo(vtxo)) {
+      return { eligible: false, reason: 'Not settled/spendable' };
+    }
+
+    const expiryMs = getVtxoExpiryMs(vtxo);
+    if (!expiryMs) {
+      return { eligible: false, reason: 'Expiry unknown' };
+    }
+
+    const msLeft = expiryMs - Date.now();
+    if (msLeft <= 0) {
+      return { eligible: false, reason: 'Expired' };
+    }
+
+    if (msLeft <= COLLAB_EXIT_MAX_MS_REMAINING) {
+      return { eligible: true, reason: `≤ ${COLLAB_EXIT_MAX_DAYS_REMAINING} days remaining` };
+    }
+
+    return { eligible: false, reason: `> ${COLLAB_EXIT_MAX_DAYS_REMAINING} days remaining` };
+  };
+
+  const loadWithdrawVtxos = async () => {
+    setWithdrawVtxosError(null);
+    setWithdrawVtxosLoading(true);
+    try {
+      const arkadeWallet = getArkadeWallet();
+      if (!arkadeWallet) {
+        throw new Error('Wallet not connected');
+      }
+
+      const vtxos = await arkadeWallet.getVtxos({
+        withRecoverable: false,
+        withUnrolled: false,
+      });
+
+      const sorted = [...(vtxos || [])].sort((a: any, b: any) => {
+        const ea = getVtxoExpiryMs(a);
+        const eb = getVtxoExpiryMs(b);
+        if (ea === null && eb === null) return 0;
+        if (ea === null) return 1;
+        if (eb === null) return -1;
+        return ea - eb;
+      });
+
+      setWithdrawVtxos(sorted);
+    } catch (e: any) {
+      setWithdrawVtxos([]);
+      setWithdrawVtxosError(e?.message || 'Failed to load VTXOs');
+    } finally {
+      setWithdrawVtxosLoading(false);
+    }
+  };
+
   useEffect(() => {
     checkWallet();
   }, []);
+
+  // Automatic VTXO maintenance (renewal) for connected wallets.
+  // Note: This only runs while the app is open in the browser.
+  useEffect(() => {
+    if (!connected) {
+      vtxoManagerRef.current = null;
+      setAutoRenewLastCheckedAt(null);
+      setAutoRenewLastExpiringCount(null);
+      setAutoRenewLastRenewTxid(null);
+      setAutoRenewError(null);
+      setRecoverableBalance(null);
+      setRecoverableError(null);
+      setRecoverableProgress('');
+      setRecoverableTxid(null);
+      if (autoRenewIntervalRef.current) {
+        window.clearInterval(autoRenewIntervalRef.current);
+        autoRenewIntervalRef.current = null;
+      }
+      return;
+    }
+
+    // Lazily create manager and run an immediate check.
+    try {
+      void getOrCreateVtxoManager();
+      void checkAndAutoRenewVtxos('login');
+      void checkRecoverableBalance();
+    } catch {
+      // Wallet might not be fully ready yet; a manual run will work later.
+    }
+
+    if (!autoRenewIntervalRef.current) {
+      autoRenewIntervalRef.current = window.setInterval(() => {
+        void checkAndAutoRenewVtxos('interval');
+      }, VTXO_AUTO_RENEW_INTERVAL_MS);
+    }
+
+    return () => {
+      if (autoRenewIntervalRef.current) {
+        window.clearInterval(autoRenewIntervalRef.current);
+        autoRenewIntervalRef.current = null;
+      }
+    };
+  }, [connected]);
 
   const checkWallet = async () => {
     const wallet = getWallet();
@@ -219,11 +520,46 @@ export default function WalletHeader() {
 
   const handleExport = () => {
     const creds = exportCredentials();
-    if (creds) {
-      toast.show('⚠️ Credentials exported! Check console for details. Keep them safe!', 'warning', 5000);
-      console.log('Private Key:', creds.privateKey);
-      console.log('Mnemonic:', creds.mnemonic || 'N/A');
+    if (!creds?.privateKey) {
+      toast.show('No wallet credentials found in this tab. Restore/connect your wallet first.', 'warning', 6000);
+      return;
     }
+
+    const mnemonic = creds.mnemonic?.trim() ? creds.mnemonic.trim() : 'N/A';
+
+    const pkPreview = `${creds.privateKey.slice(0, 8)}...${creds.privateKey.slice(-8)}`;
+
+    toast.show(
+      `Private Key (hex): ${pkPreview}`,
+      'warning',
+      0,
+      {
+        persistent: true,
+        action: {
+          label: 'Copy',
+          onClick: () => {
+            navigator.clipboard.writeText(creds.privateKey);
+            toast.show('Private key copied', 'success', 2000);
+          },
+        },
+      }
+    );
+
+    toast.show(
+      `Seed Phrase: ${mnemonic}`,
+      'warning',
+      0,
+      {
+        persistent: true,
+        action: {
+          label: 'Copy',
+          onClick: () => {
+            navigator.clipboard.writeText(mnemonic);
+            toast.show('Seed phrase copied', 'success', 2000);
+          },
+        },
+      }
+    );
   };
 
   const handleBoardClick = () => {
@@ -350,6 +686,8 @@ export default function WalletHeader() {
     setWithdrawMethod('collaborative');
     setUnrollProgress('');
     setShowUnrollInfo(false);
+    void loadWithdrawVtxos();
+    void checkRecoverableBalance();
   };
 
   const handleWithdrawSubmit = async () => {
@@ -1257,6 +1595,186 @@ export default function WalletHeader() {
                 <p className="text-gray-600 text-sm mt-1">
                   {balances.arkade.toLocaleString()} sats
                 </p>
+              </div>
+
+              {/* VTXO List */}
+              <div className="border border-blue-200 rounded-lg p-4 bg-white">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-gray-900 font-semibold">Your VTXOs (UTXO-like outputs)</p>
+                    <p className="text-xs text-gray-600 mt-1">
+                      Some collaborative exits are rejected when a VTXO has more than {COLLAB_EXIT_MAX_DAYS_REMAINING} days remaining before expiry.
+                      VTXOs are sorted by soonest expiry.
+                    </p>
+                  </div>
+                  <button
+                    onClick={loadWithdrawVtxos}
+                    disabled={withdrawVtxosLoading}
+                    className="text-sm px-3 py-2 rounded-lg border border-blue-300 text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+                  >
+                    {withdrawVtxosLoading ? 'Loading...' : 'Refresh'}
+                  </button>
+                </div>
+
+                {withdrawVtxosError && (
+                  <div className="mt-3 bg-red-50 border border-red-200 rounded p-3 text-sm text-red-700">
+                    {withdrawVtxosError}
+                  </div>
+                )}
+
+                {!withdrawVtxosError && (
+                  <div className="mt-3">
+                    {withdrawVtxosLoading ? (
+                      <div className="text-sm text-gray-700 flex items-center gap-2">
+                        <Loader2 className="animate-spin" size={16} />
+                        Loading VTXOs...
+                      </div>
+                    ) : withdrawVtxos.length === 0 ? (
+                      <div className="text-sm text-gray-700">No VTXOs found for this wallet.</div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="min-w-full text-sm">
+                          <thead>
+                            <tr className="text-left text-gray-600 border-b">
+                              <th className="py-2 pr-4">Outpoint</th>
+                              <th className="py-2 pr-4">Sats</th>
+                              <th className="py-2 pr-4">State</th>
+                              <th className="py-2 pr-4">Expiry left</th>
+                              <th className="py-2">Collaborative</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y">
+                            {withdrawVtxos.map((v: any) => {
+                              const outpoint = `${v.txid}:${v.vout}`;
+                              const expiryMs = getVtxoExpiryMs(v);
+                              const eligibility = isCollaborativeExitEligibleByExpiry(v);
+                              const state = v?.virtualStatus?.state || v?.status || 'unknown';
+
+                              return (
+                                <tr key={outpoint} className="text-gray-900">
+                                  <td className="py-2 pr-4 font-mono text-xs break-all">{outpoint}</td>
+                                  <td className="py-2 pr-4">{Number(v.value).toLocaleString()}</td>
+                                  <td className="py-2 pr-4">{state}{v?.isSpent ? ' (spent)' : ''}</td>
+                                  <td className="py-2 pr-4">{expiryMs ? formatTimeLeft(expiryMs) : 'Unknown'}</td>
+                                  <td className="py-2">
+                                    {eligibility.eligible ? (
+                                      <span className="text-green-700 font-semibold">Yes</span>
+                                    ) : (
+                                      <span className="text-gray-600">No</span>
+                                    )}
+                                    <div className="text-xs text-gray-500">{eligibility.reason}</div>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* VTXO Renewal & Recovery */}
+              <div className="border border-blue-200 rounded-lg p-4 bg-blue-50">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-gray-900 font-semibold">VTXO Renewal & Recovery</p>
+                    <p className="text-xs text-gray-600 mt-1">
+                      Auto-renew is enabled for this wallet. It renews VTXOs when they are within ~{Math.round(VTXO_RENEW_THRESHOLD_MS / (60 * 60 * 1000))} hours of expiry (runs on login and daily while this app is open).
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => void checkAndAutoRenewVtxos('manual')}
+                    disabled={autoRenewChecking}
+                    className="text-sm px-3 py-2 rounded-lg border border-blue-300 text-blue-700 hover:bg-blue-100 disabled:opacity-50"
+                  >
+                    {autoRenewChecking ? 'Checking...' : 'Run Check'}
+                  </button>
+                </div>
+
+                {autoRenewError && (
+                  <div className="mt-3 bg-red-50 border border-red-200 rounded p-3 text-sm text-red-700">
+                    {autoRenewError}
+                  </div>
+                )}
+
+                <div className="mt-3 text-sm text-gray-700 grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <div>
+                    <div className="text-xs text-gray-500">Last checked</div>
+                    <div className="font-medium">{formatDateTime(autoRenewLastCheckedAt)}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-500">Expiring found</div>
+                    <div className="font-medium">{autoRenewLastExpiringCount === null ? '—' : autoRenewLastExpiringCount}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-500">Last renew txid</div>
+                    <div className="font-mono text-xs break-all">{autoRenewLastRenewTxid ? autoRenewLastRenewTxid : '—'}</div>
+                  </div>
+                </div>
+
+                <div className="mt-4 border-t border-blue-200 pt-4">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="text-gray-900 font-semibold">Recovery</p>
+                      <p className="text-xs text-gray-600 mt-1">
+                        Checks for swept/expired VTXOs and preconfirmed sub-dust that can be recovered back into your wallet.
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => void checkRecoverableBalance()}
+                      disabled={recoverableChecking}
+                      className="text-sm px-3 py-2 rounded-lg border border-blue-300 text-blue-700 hover:bg-blue-100 disabled:opacity-50"
+                    >
+                      {recoverableChecking ? 'Checking...' : 'Check'}
+                    </button>
+                  </div>
+
+                  {recoverableError && (
+                    <div className="mt-3 bg-red-50 border border-red-200 rounded p-3 text-sm text-red-700">
+                      {recoverableError}
+                    </div>
+                  )}
+
+                  <div className="mt-3 text-sm text-gray-700 grid grid-cols-1 sm:grid-cols-4 gap-2">
+                    <div>
+                      <div className="text-xs text-gray-500">Recoverable</div>
+                      <div className="font-medium">{formatNumberLike(recoverableBalance?.recoverable)} sats</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-500">Sub-dust</div>
+                      <div className="font-medium">{formatNumberLike(recoverableBalance?.subdust)} sats</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-500">Sub-dust included</div>
+                      <div className="font-medium">{recoverableBalance ? (recoverableBalance.includesSubdust ? 'Yes' : 'No') : '—'}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-500">VTXO count</div>
+                      <div className="font-medium">{recoverableBalance ? recoverableBalance.vtxoCount : '—'}</div>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 flex items-center justify-between gap-4">
+                    <div className="text-xs text-gray-600">
+                      {recoverableTxid ? (
+                        <span className="font-mono break-all">Recovered txid: {recoverableTxid}</span>
+                      ) : recoverableProgress ? (
+                        <span>Progress: {recoverableProgress}</span>
+                      ) : (
+                        <span />
+                      )}
+                    </div>
+                    <button
+                      onClick={() => void recoverVtxosNow()}
+                      disabled={recoverableRecovering || !recoverableBalance || recoverableBalance.recoverable <= 0n}
+                      className="text-sm px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {recoverableRecovering ? 'Recovering...' : 'Recover Now'}
+                    </button>
+                  </div>
+                </div>
               </div>
 
               {/* Withdrawal Method Selection */}

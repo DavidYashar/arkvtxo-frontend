@@ -248,6 +248,7 @@ export function disconnectWallet() {
   if (typeof window !== 'undefined') {
     sessionStorage.removeItem('arkade_private_key');
     sessionStorage.removeItem('arkade_mnemonic');
+    sessionStorage.removeItem('wallet_key_shown');
   }
 }
 

@@ -25,7 +25,8 @@ class WebSocketService {
       return;
     }
 
-    console.log('Connecting to WebSocket...', INDEXER_URL);
+    const token = getWebSocketToken();
+    console.log('Connecting to WebSocket...', INDEXER_URL, '(tokenLength:', token.length + ')');
 
     this.socket = io(INDEXER_URL, {
       transports: ['websocket', 'polling'],
@@ -34,7 +35,7 @@ class WebSocketService {
       reconnectionDelayMax: 5000,
       reconnectionAttempts: this.maxReconnectAttempts,
       auth: {
-        token: getWebSocketToken()
+        token
       }
     });
 
@@ -50,7 +51,7 @@ class WebSocketService {
     });
 
     this.socket.on('connect_error', (error) => {
-      console.error('WebSocket connection error:', error.message);
+      console.error('WebSocket connection error:', error.message, 'url:', INDEXER_URL, 'tokenLength:', token.length);
       this.reconnectAttempts++;
       
       if (this.reconnectAttempts >= this.maxReconnectAttempts) {
@@ -254,8 +255,3 @@ class WebSocketService {
 
 // Singleton instance
 export const wsService = new WebSocketService();
-
-// Auto-connect on import (client-side only)
-if (typeof window !== 'undefined') {
-  wsService.connect();
-}
