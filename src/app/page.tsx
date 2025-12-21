@@ -50,7 +50,7 @@ export default function Home() {
             </p>
             <div className="mt-4 flex items-center justify-center gap-6">
               <a
-                href="https://arkade.io"
+                href="https://docs.arkadeos.com/"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="hover:text-blue-600 transition-colors font-medium"

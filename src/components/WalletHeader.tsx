@@ -1015,6 +1015,15 @@ export default function WalletHeader() {
               <span className="hidden sm:inline">Marketplace</span>
             </Link>
             <Link
+              href="/docs"
+              className={`flex items-center gap-1 sm:gap-2 px-2 sm:px-4 py-2 rounded-lg transition-all text-sm sm:text-base ${
+                pathname === '/docs' ? 'bg-white/20' : 'hover:bg-white/10'
+              }`}
+            >
+              <Copy className="w-4 h-4" />
+              <span className="hidden sm:inline">Docs</span>
+            </Link>
+            <Link
               href="/presale"
               className={`flex items-center gap-1 sm:gap-2 px-2 sm:px-4 py-2 rounded-lg transition-all text-sm sm:text-base ${
                 pathname === '/presale' ? 'bg-white/20' : 'hover:bg-white/10'
