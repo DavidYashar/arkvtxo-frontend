@@ -5,6 +5,7 @@ import { Coins, Search, TrendingUp, Wallet, ShoppingCart, Clock, Users } from 'l
 import { getWallet } from '@/lib/wallet';
 import { wsService } from '@/lib/websocket';
 import { useToast } from '@/lib/toast';
+import { debugLog } from '@/lib/debug';
 
 interface PresaleToken {
   tokenId: string;
@@ -129,7 +130,7 @@ export default function PresalePage() {
     if (!walletAddress) return;
 
     const unsubscribe = wsService.onPurchaseConfirmed((data) => {
-      console.log('✅ Purchase confirmed:', data);
+      debugLog('✅ Purchase confirmed:', data);
       setShowSuccessModal(true);
       setPurchaseRequestId(null);
       setQueuePosition(null);
@@ -148,7 +149,7 @@ export default function PresalePage() {
     if (!walletAddress) return;
 
     const unsubscribe = wsService.onPurchaseRejected((data) => {
-      console.log('❌ Purchase rejected:', data);
+      debugLog('❌ Purchase rejected:', data);
       
       // Add to rejected list to prevent reopening
       setRejectedRequestIds(prev => new Set(prev).add(data.requestId));
@@ -175,18 +176,18 @@ export default function PresalePage() {
     if (!walletAddress) return;
 
     const unsubscribe = wsService.onPaymentRequested((data) => {
-      console.log('💳 Payment requested:', data);
+      debugLog('💳 Payment requested:', data);
       
       // Ignore if this request was already rejected
       if (rejectedRequestIds.has(data.requestId)) {
-        console.log('⏭️  Request already rejected, ignoring payment-requested event');
+        debugLog('⏭️  Request already rejected, ignoring payment-requested event');
         return;
       }
       
       // Only show modal if not already showing for this request
       // This prevents countdown reset when backend re-emits
       if (showPaymentModal && paymentRequest?.requestId === data.requestId) {
-        console.log('⏭️  Payment modal already showing for this request, ignoring duplicate');
+        debugLog('⏭️  Payment modal already showing for this request, ignoring duplicate');
         return;
       }
       
@@ -213,16 +214,16 @@ export default function PresalePage() {
       setPaymentCountdown(prev => {
         if (prev <= 1) {
           // Timeout expired - auto-cancel the request
-          console.log('⏰ Payment window expired, auto-canceling...');
+          debugLog('⏰ Payment window expired, auto-canceling...');
           
           // Call cancel API
-          const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3001';
+          const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010';
           fetch(`${indexerUrl}/api/presale/cancel-payment`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ requestId: paymentRequest.requestId }),
           }).then(() => {
-            console.log('✅ Auto-canceled payment request');
+            debugLog('✅ Auto-canceled payment request');
           }).catch(err => {
             console.error('❌ Auto-cancel failed:', err);
           });
@@ -254,7 +255,7 @@ export default function PresalePage() {
 
   const fetchPresaleToken = async () => {
     try {
-      const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3001';
+      const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010';
       const response = await fetch(`${indexerUrl}/api/presale/tokens`);
       const data = await response.json();
       
@@ -279,7 +280,7 @@ export default function PresalePage() {
     if (!presaleToken || !walletAddress) return;
 
     try {
-      const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3001';
+      const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010';
       const response = await fetch(`${indexerUrl}/api/presale/${presaleToken.tokenId}/purchases/${walletAddress}`);
       const data = await response.json();
       setUserPurchases(data);
@@ -292,7 +293,7 @@ export default function PresalePage() {
     if (!presaleToken || !walletAddress) return;
 
     try {
-      const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3001';
+      const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010';
       const response = await fetch(`${indexerUrl}/api/presale/${presaleToken.tokenId}/all-purchases`);
       const data = await response.json();
       // Filter purchases to show only current wallet's transactions
@@ -350,9 +351,9 @@ export default function PresalePage() {
       // CRITICAL: Real-time supply check RIGHT BEFORE payment
       // This prevents race conditions where supply is exhausted between UI check and payment
       // ============================================================================
-      const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3001';
+      const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010';
       
-      console.log(`🔍 Real-time supply check for ${batchesToBuy} batches...`);
+      debugLog(`🔍 Real-time supply check for ${batchesToBuy} batches...`);
       
       const supplyCheckResponse = await fetch(
         `${indexerUrl}/api/presale/check-supply/${presaleToken.tokenId}/${batchesToBuy}`
@@ -376,11 +377,11 @@ export default function PresalePage() {
         return;
       }
 
-      console.log('✅ Supply confirmed:', supplyCheck.message);
+      debugLog('✅ Supply confirmed:', supplyCheck.message);
 
       const totalCost = BigInt(presaleToken.priceInSats) * BigInt(batchesToBuy);
 
-      console.log('Submitting purchase request to queue (no payment yet):', {
+      debugLog('Submitting purchase request to queue (no payment yet):', {
         batches: batchesToBuy,
         totalCost: totalCost.toString(),
       });
@@ -405,7 +406,7 @@ export default function PresalePage() {
       }
 
       const result = await purchaseResponse.json();
-      console.log('Purchase request submitted:', result);
+      debugLog('Purchase request submitted:', result);
       
       setPurchaseRequestId(result.requestId);
       setQueuePosition(result.queuePosition);
@@ -427,7 +428,7 @@ export default function PresalePage() {
 
     setSendingPayment(true);
     try {
-      console.log('💸 Sending payment...', paymentRequest);
+      debugLog('💸 Sending payment...', paymentRequest);
 
       // Get the underlying Arkade wallet to send Bitcoin
       const { getArkadeWallet } = await import('@/lib/wallet');
@@ -443,10 +444,10 @@ export default function PresalePage() {
         amount: Number(paymentRequest.amount),
       });
       
-      console.log('✅ Payment sent! TXID:', txid);
+      debugLog('✅ Payment sent! TXID:', txid);
 
       // Submit payment to backend
-      const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3001';
+      const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010';
       const response = await fetch(`${indexerUrl}/api/presale/submit-payment`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -462,7 +463,7 @@ export default function PresalePage() {
       }
 
       const result = await response.json();
-      console.log('Payment submitted:', result);
+      debugLog('Payment submitted:', result);
 
       // Close modal and wait for verification
       setShowPaymentModal(false);
@@ -481,9 +482,9 @@ export default function PresalePage() {
     if (!paymentRequest) return;
 
     try {
-      console.log('❌ Canceling payment request...', paymentRequest.requestId);
+      debugLog('❌ Canceling payment request...', paymentRequest.requestId);
 
-      const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3001';
+      const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010';
       const response = await fetch(`${indexerUrl}/api/presale/cancel-payment`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -497,7 +498,7 @@ export default function PresalePage() {
         throw new Error(error.error || 'Failed to cancel payment request');
       }
 
-      console.log('✅ Payment request canceled');
+      debugLog('✅ Payment request canceled');
       
       // Close modal
       setShowPaymentModal(false);

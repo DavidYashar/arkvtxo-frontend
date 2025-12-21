@@ -5,6 +5,9 @@ import "./globals.css";
 import WalletHeader from "@/components/WalletHeader";
 import { ToastProvider } from "@/lib/toast";
 import "@/lib/api"; // Initialize authenticated fetch globally
+import { installConsoleLogGate } from "@/lib/debug";
+
+installConsoleLogGate();
 
 const geistSans = Geist({
   variable: "--font-geist-sans",

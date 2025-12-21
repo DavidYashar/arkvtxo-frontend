@@ -216,7 +216,7 @@ export async function getWalletAsync(): Promise<TokenWallet | null> {
       if (privateKey) {
         walletInstance = await initializeWallet({
           arkServerUrl: process.env.NEXT_PUBLIC_ARK_SERVER_URL || 'https://arkade.computer',
-          tokenIndexerUrl: process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3001',
+          tokenIndexerUrl: process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010',
           apiKey: process.env.NEXT_PUBLIC_API_KEY,
           privateKey,
           mnemonic: mnemonic || undefined,

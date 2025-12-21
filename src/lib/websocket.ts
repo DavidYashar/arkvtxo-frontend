@@ -8,7 +8,7 @@
 import { io, Socket } from 'socket.io-client';
 import { getWebSocketToken } from './api';
 
-const INDEXER_URL = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3001';
+const INDEXER_URL = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010';
 
 class WebSocketService {
   private socket: Socket | null = null;

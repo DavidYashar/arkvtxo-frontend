@@ -34,7 +34,7 @@ export default function TransactionExplorer({ privateKey }: TransactionExplorerP
     setError(null);
 
     try {
-      const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3001';
+      const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010';
       const response = await fetch(`${indexerUrl}/api/asp/sdk/history`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

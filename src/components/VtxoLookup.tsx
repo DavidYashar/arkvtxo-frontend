@@ -58,7 +58,7 @@ export default function VtxoLookup({ privateKey }: VtxoLookupProps) {
 
     try {
       // Check if VTXO or Transaction exists in user's wallet using SDK
-      const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3001';
+      const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010';
       const verifyResponse = await fetch(`${indexerUrl}/api/asp/sdk/verify-vtxo`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

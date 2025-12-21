@@ -82,7 +82,7 @@ export default function CreateToken() {
         }
 
         const address = await wallet.getAddress();
-        const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3001';
+        const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010';
         const wsToken = getWebSocketToken();
         
         console.log('🔌 Setting up WebSocket connection to:', indexerUrl);
@@ -179,7 +179,7 @@ export default function CreateToken() {
             });
             console.log('✅ arkadeWallet.sendBitcoin() returned txid:', txid);
 
-            const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3001';
+            const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010';
             await apiFetch(`${indexerUrl}/api/tokens/${data.tokenId}/settle`, {
               method: 'POST',
               body: JSON.stringify({ txid }),
@@ -263,7 +263,7 @@ export default function CreateToken() {
         setUserAddress(address);
         
         // Check whitelist via backend API (more secure than env variable)
-        const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3001';
+        const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010';
         console.log(' DEBUG - process.env.NEXT_PUBLIC_INDEXER_URL:', process.env.NEXT_PUBLIC_INDEXER_URL);
         console.log(' DEBUG - indexerUrl final value:', indexerUrl);
         console.log(' Calling whitelist API:', `${indexerUrl}/api/whitelist/check/${address}`);

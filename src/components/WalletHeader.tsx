@@ -430,7 +430,7 @@ export default function WalletHeader() {
     try {
       await initializeWallet({
         arkServerUrl: process.env.NEXT_PUBLIC_ARK_SERVER_URL || 'https://arkade.computer',
-        tokenIndexerUrl: process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3001',
+        tokenIndexerUrl: process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010',
         apiKey: process.env.NEXT_PUBLIC_API_KEY,
         mnemonic: newWalletCreds.mnemonic,
       });
@@ -455,7 +455,7 @@ export default function WalletHeader() {
     try {
       await initializeWallet({
         arkServerUrl: process.env.NEXT_PUBLIC_ARK_SERVER_URL || 'https://arkade.computer',
-        tokenIndexerUrl: process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3001',
+        tokenIndexerUrl: process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010',
         apiKey: process.env.NEXT_PUBLIC_API_KEY,
         privateKey: restorePrivateKey.trim() || undefined,
         mnemonic: restoreMnemonic.trim() || undefined,

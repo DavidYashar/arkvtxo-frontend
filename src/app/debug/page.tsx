@@ -27,10 +27,10 @@ export default function DebugPage() {
 
       <div style={{ marginTop: '2rem', padding: '1rem', border: '2px solid #ffc107', borderRadius: '8px' }}>
         <h2>⚠️ Browser Cache Issue</h2>
-        <p>If the Indexer URL shows <code>http://localhost:3001</code> but tokens still don't work:</p>
+        <p>If the Indexer URL shows <code>http://localhost:3010</code> but tokens still don't work:</p>
         <ol>
           <li>Open a NEW Incognito/Private window</li>
-          <li>Go to <code>http://localhost:3001</code></li>
+          <li>Go to <code>http://localhost:3010</code></li>
           <li>Try creating a token</li>
         </ol>
         <p><strong>Why?</strong> Your browser has cached old JavaScript files that use the wrong URL.</p>
@@ -41,7 +41,7 @@ export default function DebugPage() {
         <button
           onClick={async () => {
             try {
-              const response = await fetch('http://localhost:3001/health');
+              const response = await fetch('http://localhost:3010/health');
               const data = await response.json();
               alert('✅ Indexer is working!\n\n' + JSON.stringify(data, null, 2));
             } catch (error) {

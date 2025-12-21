@@ -4,7 +4,7 @@
  */
 
 const API_KEY = process.env.NEXT_PUBLIC_API_KEY || '';
-const BACKEND_URL = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3001';
+const BACKEND_URL = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010';
 
 // Override global fetch for backend API calls to automatically include auth
 const originalFetch = global.fetch;

@@ -59,7 +59,7 @@ export default function Home() {
               </a>
               <span>•</span>
               <a
-                href={`${process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3001'}/health`}
+                href={`${process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010'}/health`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="hover:text-blue-600 transition-colors font-medium"
