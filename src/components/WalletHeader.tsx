@@ -2,13 +2,16 @@
 
 import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import { usePathname } from 'next/navigation';
-import { Wallet, Store, Coins, Home, Copy, RefreshCw, Eye, ArrowDownToLine, ArrowUpFromLine, X, AlertCircle, Loader2, CheckCircle2 } from 'lucide-react';
+import { Store, Coins, Home, Copy, RefreshCw, Eye, ArrowDownToLine, ArrowUpFromLine, X, AlertCircle, Loader2, CheckCircle2 } from 'lucide-react';
 import { initializeWallet, getWallet, disconnectWallet, exportCredentials, getAllBalances, getAllAddresses, getArkadeWallet } from '@/lib/wallet';
 import { Ramps, VtxoManager } from '@arkade-os/sdk';
 import { useToast } from '@/lib/toast';
 import { getMempoolUrl, getNetworkName } from '@/lib/mempool';
 import FeeSelection from './FeeSelection';
+
+import logoArkvtxo from '../../images/logo-arkvtxo.png';
 
 interface AddressInfo {
   offchain: string;
@@ -992,7 +995,7 @@ export default function WalletHeader() {
       {/* Simple Navigation Bar */}
       <div className="bg-gradient-to-r from-blue-600 to-blue-800 text-white py-3 px-6">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <h1 className="text-lg sm:text-xl md:text-2xl font-bold">Arkade Token Platform</h1>
+          <h1 className="text-lg sm:text-xl md:text-2xl font-bold">ARKVTXO platform</h1>
           
           {/* Navigation - Always visible, responsive sizing */}
           <nav className="flex items-center gap-1">
@@ -1043,8 +1046,13 @@ export default function WalletHeader() {
             {!connected ? (
               /* Not Connected State */
               <div className="text-center">
-                <div className="w-20 h-20 bg-gradient-to-br from-blue-500 to-blue-700 rounded-full flex items-center justify-center mx-auto mb-6">
-                  <Wallet className="w-10 h-10 text-white" />
+                <div className="mb-3 flex justify-center">
+                  <Image
+                    src={logoArkvtxo}
+                    alt="ARKVTXO"
+                    priority
+                    className="h-auto w-28 sm:w-32 md:w-36"
+                  />
                 </div>
                 <h2 className="text-3xl font-bold text-gray-900 mb-3">Arkade Wallet</h2>
                 <p className="text-gray-600 mb-8">Create a new wallet or restore an existing one</p>
