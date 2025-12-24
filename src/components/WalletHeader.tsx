@@ -12,6 +12,7 @@ import { getMempoolUrl, getNetworkName } from '@/lib/mempool';
 import FeeSelection from './FeeSelection';
 
 import logoArkvtxo from '../../images/logo-arkvtxo.png';
+import tweeterIcon from '../../images/tweeter-icon.png';
 
 interface AddressInfo {
   offchain: string;
@@ -995,7 +996,25 @@ export default function WalletHeader() {
       {/* Simple Navigation Bar */}
       <div className="bg-gradient-to-r from-blue-600 to-blue-800 text-white py-3 px-6">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <h1 className="text-lg sm:text-xl md:text-2xl font-bold">ARKVTXO platform</h1>
+          <div className="flex items-center gap-2 sm:gap-3">
+            <h1 className="text-lg sm:text-xl md:text-2xl font-bold">ARKVTXO platform</h1>
+            <a
+              href="https://x.com/arkvtxo"
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="ARKVTXO on X"
+              className="inline-flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 rounded-lg transition-all hover:bg-white/10 text-sm sm:text-base"
+            >
+              <Image
+                src={tweeterIcon}
+                alt="X"
+                width={16}
+                height={16}
+                className="w-4 h-4"
+              />
+              <span className="hidden sm:inline">@arkvtxo</span>
+            </a>
+          </div>
           
           {/* Navigation - Always visible, responsive sizing */}
           <nav className="flex items-center gap-1">

@@ -12,3 +12,6 @@ build/
 *.swo
 *.tsbuildinfo
 next-env.d.ts
+
+# Windows downloaded-file metadata
+*:Zone.Identifier
