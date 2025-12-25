@@ -23,7 +23,6 @@ export interface WalletConfig {
   apiKey?: string;
   privateKey?: string;
   mnemonic?: string;
-  forceNew?: boolean; // Force creation of new wallet, ignore sessionStorage
 }
 
 export interface WalletCredentials {
@@ -33,6 +32,30 @@ export interface WalletCredentials {
 
 let walletInstance: TokenWallet | null = null;
 let arkadeWallet: any | null = null;
+let activePrivateKey: string | null = null;
+let activeMnemonic: string | null = null;
+
+const WALLET_CHANGED_EVENT = 'arkade_wallet_changed';
+
+function notifyWalletChanged() {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent(WALLET_CHANGED_EVENT));
+}
+
+export function onWalletChanged(handler: () => void): () => void {
+  if (typeof window === 'undefined') return () => {};
+  const listener = () => handler();
+  window.addEventListener(WALLET_CHANGED_EVENT, listener);
+  return () => window.removeEventListener(WALLET_CHANGED_EVENT, listener);
+}
+
+export function getActivePrivateKey(): string | null {
+  return activePrivateKey;
+}
+
+export function getActiveMnemonic(): string | null {
+  return activeMnemonic;
+}
 
 /**
  * Generate new wallet credentials (private key and mnemonic)
@@ -102,8 +125,8 @@ export function mnemonicToPrivateKey(mnemonic: string): string {
 }
 
 /**
- * Initialize wallet from private key, mnemonic, or create new one
- * Uses sessionStorage to keep wallets separate per tab
+ * Initialize wallet from private key, mnemonic, or create new one.
+ * Note: credentials are kept in-memory only. Persisted login is handled by the encrypted vault.
  */
 export async function initializeWallet(config: WalletConfig): Promise<TokenWallet> {
   let privateKey = config.privateKey;
@@ -114,45 +137,15 @@ export async function initializeWallet(config: WalletConfig): Promise<TokenWalle
     privateKey = await mnemonicToPrivateKey(mnemonic);
   }
   
-  // Get or generate private key
+  // If still no private key, generate a brand new wallet (in-memory).
   if (!privateKey) {
-    // If forceNew flag is set, skip sessionStorage completely
-    if (!config.forceNew) {
-      // Only check sessionStorage if we're explicitly restoring (not creating new)
-      // This prevents reusing old credentials when creating a new wallet
-      const isRestoringFromSession = typeof window !== 'undefined' && 
-        sessionStorage.getItem('arkade_private_key') && 
-        sessionStorage.getItem('wallet_key_shown') === 'true';
-      
-      if (isRestoringFromSession) {
-        // Restoring existing wallet from session
-        privateKey = sessionStorage.getItem('arkade_private_key') || undefined;
-        mnemonic = sessionStorage.getItem('arkade_mnemonic') || undefined;
-      }
-    }
-    
-    // If still no private key, generate a brand new wallet
-    if (!privateKey) {
-      // Generate new wallet with both private key and mnemonic
-      const credentials = generateWalletCredentials();
-      privateKey = credentials.privateKey;
-      mnemonic = credentials.mnemonic;
-      
-      // Save both to sessionStorage (only for this tab)
-      if (typeof window !== 'undefined') {
-        sessionStorage.setItem('arkade_private_key', privateKey);
-        sessionStorage.setItem('arkade_mnemonic', mnemonic);
-      }
-    }
-  } else {
-    // If private key provided explicitly (restoring), save it to sessionStorage
-    if (typeof window !== 'undefined') {
-      sessionStorage.setItem('arkade_private_key', privateKey);
-      if (mnemonic) {
-        sessionStorage.setItem('arkade_mnemonic', mnemonic);
-      }
-    }
+    const credentials = generateWalletCredentials();
+    privateKey = credentials.privateKey;
+    mnemonic = credentials.mnemonic;
   }
+
+  activePrivateKey = privateKey;
+  activeMnemonic = mnemonic || null;
   
   // Create Arkade wallet
   const identity = SingleKey.fromHex(privateKey);
@@ -184,6 +177,8 @@ export async function initializeWallet(config: WalletConfig): Promise<TokenWalle
     bitcoin.networks.bitcoin,
     privateKey  // ← Pass private key for Bitcoin L1 OP_RETURN
   );
+
+  notifyWalletChanged();
   
   return walletInstance;
 }
@@ -201,35 +196,7 @@ export function getWallet(): TokenWallet | null {
  * Automatically restores wallet if it exists in sessionStorage but not in memory
  */
 export async function getWalletAsync(): Promise<TokenWallet | null> {
-  // If already in memory, return it
-  if (walletInstance) {
-    return walletInstance;
-  }
-
-  // Try to restore from sessionStorage
-  if (typeof window !== 'undefined' && hasStoredWallet()) {
-    try {
-      console.log('🔄 Auto-restoring wallet from sessionStorage...');
-      const privateKey = sessionStorage.getItem('arkade_private_key');
-      const mnemonic = sessionStorage.getItem('arkade_mnemonic');
-      
-      if (privateKey) {
-        walletInstance = await initializeWallet({
-          arkServerUrl: process.env.NEXT_PUBLIC_ARK_SERVER_URL || 'https://arkade.computer',
-          tokenIndexerUrl: process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010',
-          apiKey: process.env.NEXT_PUBLIC_API_KEY,
-          privateKey,
-          mnemonic: mnemonic || undefined,
-        });
-        console.log('✅ Wallet restored from sessionStorage');
-        return walletInstance;
-      }
-    } catch (error) {
-      console.error('Failed to restore wallet:', error);
-    }
-  }
-
-  return null;
+  return walletInstance;
 }
 
 /**
@@ -245,55 +212,41 @@ export function getArkadeWallet(): any | null {
 export function disconnectWallet() {
   walletInstance = null;
   arkadeWallet = null;
-  if (typeof window !== 'undefined') {
-    sessionStorage.removeItem('arkade_private_key');
-    sessionStorage.removeItem('arkade_mnemonic');
-    sessionStorage.removeItem('wallet_key_shown');
-  }
+  activePrivateKey = null;
+  activeMnemonic = null;
+  notifyWalletChanged();
 }
 
 /**
  * Export credentials (private key and mnemonic) from current session
  */
 export function exportCredentials(): WalletCredentials | null {
-  if (typeof window !== 'undefined') {
-    const privateKey = sessionStorage.getItem('arkade_private_key');
-    const mnemonic = sessionStorage.getItem('arkade_mnemonic');
-    if (privateKey && mnemonic) {
-      return { privateKey, mnemonic };
-    }
-  }
-  return null;
+  // Deprecated: secret export is no longer supported in the UI.
+  if (!activePrivateKey || !activeMnemonic) return null;
+  return { privateKey: activePrivateKey, mnemonic: activeMnemonic };
 }
 
 /**
  * Export private key from current session (legacy)
  */
 export function exportPrivateKey(): string | null {
-  if (typeof window !== 'undefined') {
-    return sessionStorage.getItem('arkade_private_key');
-  }
-  return null;
+  // Deprecated: secret export is no longer supported in the UI.
+  return activePrivateKey;
 }
 
 /**
  * Export mnemonic from current session
  */
 export function exportMnemonic(): string | null {
-  if (typeof window !== 'undefined') {
-    return sessionStorage.getItem('arkade_mnemonic');
-  }
-  return null;
+  // Deprecated: secret export is no longer supported in the UI.
+  return activeMnemonic;
 }
 
 /**
  * Check if wallet exists in current session
  */
 export function hasStoredWallet(): boolean {
-  if (typeof window !== 'undefined') {
-    return !!sessionStorage.getItem('arkade_private_key');
-  }
-  return false;
+  return Boolean(activePrivateKey);
 }
 
 /**
@@ -312,9 +265,7 @@ export async function getAllAddresses(): Promise<{
     return null;
   }
   
-  const privateKey = typeof window !== 'undefined' 
-    ? sessionStorage.getItem('arkade_private_key') 
-    : null;
+  const privateKey = activePrivateKey;
   
   console.log('privateKey from sessionStorage:', privateKey ? 'exists (length ' + privateKey.length + ')' : 'null');
     
@@ -389,9 +340,7 @@ export async function getAllBalances(): Promise<{
     return null;
   }
   
-  const privateKey = typeof window !== 'undefined' 
-    ? sessionStorage.getItem('arkade_private_key') 
-    : null;
+  const privateKey = activePrivateKey;
   
   console.log('privateKey from sessionStorage:', privateKey ? 'exists (length ' + privateKey.length + ')' : 'null');
     

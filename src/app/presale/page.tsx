@@ -30,6 +30,9 @@ interface UserPurchases {
 
 export default function PresalePage() {
   const toast = useToast();
+  const PRESALE_DISCLAIMER_KEY = 'arkvtxo_presale_disclaimer_v1';
+
+  const [showPresaleDisclaimer, setShowPresaleDisclaimer] = useState(false);
   const [txid, setTxid] = useState('');
   const [loading, setLoading] = useState(false);
   const [presaleToken, setPresaleToken] = useState<PresaleToken | null>(null);
@@ -59,6 +62,25 @@ export default function PresalePage() {
   } | null>(null);
   const [paymentCountdown, setPaymentCountdown] = useState<number>(15);
   const [sendingPayment, setSendingPayment] = useState(false);
+
+  useEffect(() => {
+    try {
+      const alreadyAcknowledged = localStorage.getItem(PRESALE_DISCLAIMER_KEY) === '1';
+      setShowPresaleDisclaimer(!alreadyAcknowledged);
+    } catch {
+      // If storage is blocked/unavailable, still show the notice for safety.
+      setShowPresaleDisclaimer(true);
+    }
+  }, []);
+
+  const acknowledgePresaleDisclaimer = () => {
+    try {
+      localStorage.setItem(PRESALE_DISCLAIMER_KEY, '1');
+    } catch {
+      // Ignore write failures (privacy mode / blocked storage)
+    }
+    setShowPresaleDisclaimer(false);
+  };
 
   useEffect(() => {
     wsService.connect();
@@ -542,6 +564,51 @@ export default function PresalePage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-blue-100">
+      {showPresaleDisclaimer ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
+          <div className="w-full max-w-2xl rounded-2xl border border-blue-300 bg-white p-6 shadow-xl">
+            <h3 className="text-2xl font-bold text-blue-900">Important presale notice</h3>
+            <p className="mt-2 text-sm text-blue-800">
+              This presale flow is experimental. Please review the points below before continuing.
+            </p>
+            <ul className="mt-4 space-y-2 text-sm text-blue-900">
+              <li className="flex gap-2">
+                <span className="mt-0.5 text-blue-700">•</span>
+                <span>
+                  VTXO is an experimental token for the Arkade token protocol.
+                </span>
+              </li>
+              <li className="flex gap-2">
+                <span className="mt-0.5 text-blue-700">•</span>
+                <span>
+                  This presale is an airdrop: once the presale is sold out, VTXO will be airdropped to participating wallets based on recorded purchases.
+                </span>
+              </li>
+              <li className="flex gap-2">
+                <span className="mt-0.5 text-blue-700">•</span>
+                <span>
+                  After payment, your purchase is registered and you receive a transaction ID (TXID). Keep it so you can check your status later.
+                </span>
+              </li>
+              <li className="flex gap-2">
+                <span className="mt-0.5 text-blue-700">•</span>
+                <span>
+                  Participation is optional and involves risk. Proceed only if you understand the process and are comfortable.
+                </span>
+              </li>
+            </ul>
+            <div className="mt-6 flex justify-end">
+              <button
+                onClick={acknowledgePresaleDisclaimer}
+                className="rounded-lg bg-blue-700 px-5 py-2.5 font-semibold text-white transition-all hover:bg-blue-800"
+              >
+                I Understand
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {/* Main Content */}
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-4xl mx-auto">

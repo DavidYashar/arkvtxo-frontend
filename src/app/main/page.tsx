@@ -3,15 +3,16 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowRight, Lock, Zap, Coins, Shield, Link as LinkIcon } from 'lucide-react';
+import { getActivePrivateKey, onWalletChanged } from '@/lib/wallet';
 
 export default function MainPage() {
   const router = useRouter();
   const [isConnected, setIsConnected] = useState(false);
 
   useEffect(() => {
-    // Check if wallet is connected
-    const key = sessionStorage.getItem('arkade_private_key');
-    setIsConnected(!!key);
+    const update = () => setIsConnected(Boolean(getActivePrivateKey()));
+    update();
+    return onWalletChanged(update);
   }, []);
 
   const handleGetStarted = () => {
@@ -153,7 +154,7 @@ export default function MainPage() {
       <section className="container mx-auto px-4 py-16">
         <div className="max-w-6xl mx-auto">
           <h2 className="text-3xl sm:text-4xl font-bold text-center mb-12">
-            Why Build on Arkade?
+            Why We Build on Arkade?
           </h2>
 
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">

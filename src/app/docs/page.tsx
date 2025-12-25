@@ -254,7 +254,7 @@ export default function DocsPage() {
 
           <section className="mt-6 bg-white rounded-2xl shadow-lg border border-blue-200 overflow-hidden">
             <div className="px-5 sm:px-6 py-4 bg-blue-50">
-              <h2 className="text-lg sm:text-xl font-semibold text-blue-950">Marketplace</h2>
+              <h2 className="text-lg sm:text-xl font-semibold text-blue-950">Marketplace (coming soon)</h2>
               <p className="text-sm sm:text-base text-blue-800 mt-1">
                 Discover and trade tokens in one place. (coming soon)
               </p>

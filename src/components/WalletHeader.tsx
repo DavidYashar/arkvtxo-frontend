@@ -4,8 +4,9 @@ import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { usePathname } from 'next/navigation';
-import { Store, Coins, Home, Copy, RefreshCw, Eye, ArrowDownToLine, ArrowUpFromLine, X, AlertCircle, Loader2, CheckCircle2 } from 'lucide-react';
-import { initializeWallet, getWallet, disconnectWallet, exportCredentials, getAllBalances, getAllAddresses, getArkadeWallet } from '@/lib/wallet';
+import { Store, Coins, Home, Copy, RefreshCw, ArrowDownToLine, ArrowUpFromLine, X, AlertCircle, Loader2, CheckCircle2 } from 'lucide-react';
+import { initializeWallet, getWallet, disconnectWallet, getAllBalances, getAllAddresses, getArkadeWallet, mnemonicToPrivateKey, getActivePrivateKey } from '@/lib/wallet';
+import { createVault, hasVault, unlockVault } from '@/lib/walletVault';
 import { Ramps, VtxoManager } from '@arkade-os/sdk';
 import { useToast } from '@/lib/toast';
 import { getMempoolUrl, getNetworkName } from '@/lib/mempool';
@@ -62,6 +63,27 @@ export default function WalletHeader() {
   const [unrollProgress, setUnrollProgress] = useState<string>('');
   const [showUnrollInfo, setShowUnrollInfo] = useState(false);
 
+  const [vaultExists, setVaultExists] = useState(false);
+  const [showUnlockModal, setShowUnlockModal] = useState(false);
+  const [unlockPassword, setUnlockPassword] = useState('');
+  const [unlocking, setUnlocking] = useState(false);
+
+  const [showSetPasswordModal, setShowSetPasswordModal] = useState(false);
+  const [pendingPrivateKey, setPendingPrivateKey] = useState<string | null>(null);
+  const [setPasswordMessage, setSetPasswordMessage] = useState('');
+  const [setPassword, setSetPassword] = useState('');
+  const [setPasswordConfirm, setSetPasswordConfirm] = useState('');
+  const [settingPassword, setSettingPassword] = useState(false);
+
+  const [newWalletPassword, setNewWalletPassword] = useState('');
+  const [newWalletPasswordConfirm, setNewWalletPasswordConfirm] = useState('');
+
+  const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [changePasswordNew, setChangePasswordNew] = useState('');
+  const [changePasswordConfirm, setChangePasswordConfirm] = useState('');
+  const [changingPassword, setChangingPassword] = useState(false);
+
   const [withdrawVtxos, setWithdrawVtxos] = useState<any[]>([]);
   const [withdrawVtxosLoading, setWithdrawVtxosLoading] = useState(false);
   const [withdrawVtxosError, setWithdrawVtxosError] = useState<string | null>(null);
@@ -110,6 +132,43 @@ export default function WalletHeader() {
     } catch {
       return 'Unknown';
     }
+  };
+
+  const passwordRules = (password: string) => {
+    const hasMinLength = password.length >= 10;
+    const hasUpper = /[A-Z]/.test(password);
+    const hasLower = /[a-z]/.test(password);
+    const hasSpecial = /[^A-Za-z0-9]/.test(password);
+
+    const checks = [
+      { label: 'At least 10 characters', ok: hasMinLength },
+      { label: 'At least 1 uppercase letter (A-Z)', ok: hasUpper },
+      { label: 'At least 1 lowercase letter (a-z)', ok: hasLower },
+      { label: 'At least 1 special character (e.g. <>./,&*^)', ok: hasSpecial },
+    ];
+
+    return {
+      checks,
+      isStrong: checks.every((c) => c.ok),
+    };
+  };
+
+  const renderPasswordStrength = (password: string) => {
+    const { checks, isStrong } = passwordRules(password);
+    return (
+      <div className="mt-2 text-left">
+        <div className={`text-sm font-semibold ${isStrong ? 'text-green-700' : 'text-gray-700'}`}>
+          Password strength: {isStrong ? 'Strong' : 'Weak'}
+        </div>
+        <ul className="mt-2 space-y-1 text-xs">
+          {checks.map((c) => (
+            <li key={c.label} className={c.ok ? 'text-green-700' : 'text-gray-600'}>
+              {c.ok ? '✓' : '•'} {c.label}
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
   };
 
   const getOrCreateVtxoManager = (): any => {
@@ -324,6 +383,26 @@ export default function WalletHeader() {
     checkWallet();
   }, []);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const exists = hasVault();
+    setVaultExists(exists);
+
+    // Legacy migration: if an old tab still has plaintext session credentials,
+    // prompt the user to set a password so future logins use the vault.
+    if (!exists) {
+      const legacyPk = window.sessionStorage.getItem('arkade_private_key');
+      if (legacyPk) {
+        setPendingPrivateKey(legacyPk);
+        setSetPasswordMessage(
+          'Security update: set a password now. From now on, you will log in using this password (like a Chrome extension wallet).'
+        );
+        setShowSetPasswordModal(true);
+      }
+    }
+  }, []);
+
   // Automatic VTXO maintenance (renewal) for connected wallets.
   // Note: This only runs while the app is open in the browser.
   useEffect(() => {
@@ -376,10 +455,9 @@ export default function WalletHeader() {
       // Get the actual boarding address from the Arkade wallet
       let boardingAddr = '';
       try {
-        const { getWalletAsync } = await import('@/lib/wallet');
-        const walletInstance = await getWalletAsync();
-        if (walletInstance?.wallet) {
-          boardingAddr = await walletInstance.wallet.getBoardingAddress();
+        const arkade = getArkadeWallet();
+        if (arkade) {
+          boardingAddr = await arkade.getBoardingAddress();
           console.log('🎯 Boarding address fetched:', boardingAddr);
         }
       } catch (error) {
@@ -426,22 +504,38 @@ export default function WalletHeader() {
 
   const handleConfirmCreateWallet = async () => {
     if (!newWalletCreds || !credsConfirmed) {
-      alert('Please confirm you have saved your credentials');
+      alert('Please confirm you have saved your recovery phrase');
+      return;
+    }
+
+    const strength = passwordRules(newWalletPassword);
+    if (!strength.isStrong) {
+      alert('Please choose a stronger password');
+      return;
+    }
+
+    if (!newWalletPassword || newWalletPassword !== newWalletPasswordConfirm) {
+      alert('Passwords do not match');
       return;
     }
 
     setConnecting(true);
     try {
+      await createVault(newWalletPassword, { privateKey: newWalletCreds.privateKey });
+      setVaultExists(true);
+
       await initializeWallet({
         arkServerUrl: process.env.NEXT_PUBLIC_ARK_SERVER_URL || 'https://arkade.computer',
         tokenIndexerUrl: process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010',
         apiKey: process.env.NEXT_PUBLIC_API_KEY,
-        mnemonic: newWalletCreds.mnemonic,
+        privateKey: newWalletCreds.privateKey,
       });
       await checkWallet();
       setShowNewWalletModal(false);
       setNewWalletCreds(null);
       setCredsConfirmed(false);
+      setNewWalletPassword('');
+      setNewWalletPasswordConfirm('');
     } catch (error) {
       console.error('Failed to create wallet:', error);
       alert('Failed to create wallet');
@@ -457,19 +551,18 @@ export default function WalletHeader() {
     }
     setConnecting(true);
     try {
-      await initializeWallet({
-        arkServerUrl: process.env.NEXT_PUBLIC_ARK_SERVER_URL || 'https://arkade.computer',
-        tokenIndexerUrl: process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010',
-        apiKey: process.env.NEXT_PUBLIC_API_KEY,
-        privateKey: restorePrivateKey.trim() || undefined,
-        mnemonic: restoreMnemonic.trim() || undefined,
-      });
-      await checkWallet();
+      const pk = restorePrivateKey.trim()
+        ? restorePrivateKey.trim()
+        : mnemonicToPrivateKey(restoreMnemonic.trim());
+
+      setPendingPrivateKey(pk);
+      setSetPasswordMessage(
+        'Set a password to finish restoring. From now on, you will log in using this password.'
+      );
+      setShowSetPasswordModal(true);
       setShowRestore(false);
-      setRestorePrivateKey('');
-      setRestoreMnemonic('');
     } catch (error) {
-      console.error('Failed to restore wallet:', error);
+      console.error('Failed to start restore:', error);
       alert('Failed to restore wallet. Please check your credentials.');
     } finally {
       setConnecting(false);
@@ -522,48 +615,122 @@ export default function WalletHeader() {
     toast.show('Address copied to clipboard!', 'success', 2000);
   };
 
-  const handleExport = () => {
-    const creds = exportCredentials();
-    if (!creds?.privateKey) {
-      toast.show('No wallet credentials found in this tab. Restore/connect your wallet first.', 'warning', 6000);
+  const handleUnlock = async () => {
+    if (!unlockPassword) return;
+    setUnlocking(true);
+    try {
+      const payload = await unlockVault(unlockPassword);
+      await initializeWallet({
+        arkServerUrl: process.env.NEXT_PUBLIC_ARK_SERVER_URL || 'https://arkade.computer',
+        tokenIndexerUrl: process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010',
+        apiKey: process.env.NEXT_PUBLIC_API_KEY,
+        privateKey: payload.privateKey,
+      });
+      await checkWallet();
+      setShowUnlockModal(false);
+      setUnlockPassword('');
+      toast.show('Wallet unlocked', 'success', 2500);
+    } catch (e: any) {
+      toast.show(e?.message || 'Failed to unlock wallet', 'warning', 6000);
+    } finally {
+      setUnlocking(false);
+    }
+  };
+
+  const handleSetPasswordAndConnect = async () => {
+    if (!pendingPrivateKey) return;
+    const strength = passwordRules(setPassword);
+    if (!strength.isStrong) {
+      toast.show('Please choose a stronger password', 'warning', 5000);
       return;
     }
 
-    const mnemonic = creds.mnemonic?.trim() ? creds.mnemonic.trim() : 'N/A';
+    if (!setPassword || setPassword !== setPasswordConfirm) {
+      toast.show('Passwords do not match', 'warning', 4000);
+      return;
+    }
 
-    const pkPreview = `${creds.privateKey.slice(0, 8)}...${creds.privateKey.slice(-8)}`;
+    setSettingPassword(true);
+    try {
+      await createVault(setPassword, { privateKey: pendingPrivateKey });
+      setVaultExists(true);
 
-    toast.show(
-      `Private Key (hex): ${pkPreview}`,
-      'warning',
-      0,
-      {
-        persistent: true,
-        action: {
-          label: 'Copy',
-          onClick: () => {
-            navigator.clipboard.writeText(creds.privateKey);
-            toast.show('Private key copied', 'success', 2000);
-          },
-        },
+      // Clear any legacy plaintext storage immediately.
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.removeItem('arkade_private_key');
+        window.sessionStorage.removeItem('arkade_mnemonic');
+        window.sessionStorage.removeItem('wallet_key_shown');
       }
-    );
 
-    toast.show(
-      `Seed Phrase: ${mnemonic}`,
-      'warning',
-      0,
-      {
-        persistent: true,
-        action: {
-          label: 'Copy',
-          onClick: () => {
-            navigator.clipboard.writeText(mnemonic);
-            toast.show('Seed phrase copied', 'success', 2000);
-          },
-        },
+      await initializeWallet({
+        arkServerUrl: process.env.NEXT_PUBLIC_ARK_SERVER_URL || 'https://arkade.computer',
+        tokenIndexerUrl: process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010',
+        apiKey: process.env.NEXT_PUBLIC_API_KEY,
+        privateKey: pendingPrivateKey,
+      });
+      await checkWallet();
+
+      setShowSetPasswordModal(false);
+      setPendingPrivateKey(null);
+      setSetPassword('');
+      setSetPasswordConfirm('');
+      setRestorePrivateKey('');
+      setRestoreMnemonic('');
+      toast.show('Password set. Next time, unlock with your password.', 'success', 4500);
+    } catch (e: any) {
+      toast.show(e?.message || 'Failed to set password', 'warning', 6000);
+    } finally {
+      setSettingPassword(false);
+    }
+  };
+
+  const handleChangePassword = async () => {
+    if (!vaultExists) {
+      toast.show('No password vault found on this device.', 'warning', 5000);
+      return;
+    }
+
+    const activePk = getActivePrivateKey();
+    if (!activePk) {
+      toast.show('Wallet is not unlocked', 'warning', 4000);
+      return;
+    }
+
+    if (!currentPassword) {
+      toast.show('Enter your current password', 'warning', 4000);
+      return;
+    }
+
+    const strength = passwordRules(changePasswordNew);
+    if (!strength.isStrong) {
+      toast.show('Please choose a stronger new password', 'warning', 5000);
+      return;
+    }
+
+    if (!changePasswordNew || changePasswordNew !== changePasswordConfirm) {
+      toast.show('New passwords do not match', 'warning', 4000);
+      return;
+    }
+
+    setChangingPassword(true);
+    try {
+      const payload = await unlockVault(currentPassword);
+      if (payload.privateKey !== activePk) {
+        throw new Error('Current password does not match the active wallet');
       }
-    );
+
+      await createVault(changePasswordNew, { privateKey: payload.privateKey });
+
+      setShowChangePasswordModal(false);
+      setCurrentPassword('');
+      setChangePasswordNew('');
+      setChangePasswordConfirm('');
+      toast.show('Password changed successfully', 'success', 3500);
+    } catch (e: any) {
+      toast.show(e?.message || 'Failed to change password', 'warning', 6000);
+    } finally {
+      setChangingPassword(false);
+    }
   };
 
   const handleBoardClick = () => {
@@ -1078,6 +1245,14 @@ export default function WalletHeader() {
                 
                 {!showRestore ? (
                   <div className="flex flex-col items-center gap-4 max-w-md mx-auto">
+                    {vaultExists && (
+                      <button
+                        onClick={() => setShowUnlockModal(true)}
+                        className="w-full px-6 py-4 bg-white text-blue-600 border-2 border-blue-600 rounded-lg font-semibold text-lg hover:bg-blue-50 transition-all"
+                      >
+                        Unlock with Password
+                      </button>
+                    )}
                     <button
                       onClick={handleCreateWallet}
                       disabled={connecting}
@@ -1096,7 +1271,7 @@ export default function WalletHeader() {
                   <div className="max-w-lg mx-auto">
                     <div className="mb-4">
                       <label className="block text-sm font-semibold text-gray-700 mb-2 text-left">
-                        Private Key (WIF) - Optional
+                        Private Key - Optional
                       </label>
                       <input
                         type="text"
@@ -1196,13 +1371,14 @@ export default function WalletHeader() {
                       <RefreshCw className="w-4 h-4" />
                       Refresh
                     </button>
-                    <button
-                      onClick={handleExport}
-                      className="px-4 py-2 bg-blue-300 text-blue-900 rounded-lg hover:bg-blue-400 transition-colors flex items-center gap-2"
-                    >
-                      <Eye className="w-4 h-4" />
-                      View Keys
-                    </button>
+                    {vaultExists && (
+                      <button
+                        onClick={() => setShowChangePasswordModal(true)}
+                        className="px-4 py-2 bg-blue-200 text-blue-800 rounded-lg hover:bg-blue-300 transition-colors"
+                      >
+                        Change Password
+                      </button>
+                    )}
                     <button
                       onClick={handleDisconnect}
                       className="px-4 py-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition-colors"
@@ -1249,16 +1425,17 @@ export default function WalletHeader() {
                       <RefreshCw className="w-4 h-4" />
                       Refresh
                     </button>
-                    <button
-                      onClick={() => {
-                        handleExport();
-                        setMobileMenuOpen(false);
-                      }}
-                      className="w-full px-4 py-3 bg-blue-300 text-blue-900 rounded-lg hover:bg-blue-400 transition-colors flex items-center gap-2"
-                    >
-                      <Eye className="w-4 h-4" />
-                      View Keys
-                    </button>
+                    {vaultExists && (
+                      <button
+                        onClick={() => {
+                          setShowChangePasswordModal(true);
+                          setMobileMenuOpen(false);
+                        }}
+                        className="w-full px-4 py-3 bg-blue-200 text-blue-800 rounded-lg hover:bg-blue-300 transition-colors"
+                      >
+                        Change Password
+                      </button>
+                    )}
                     <button
                       onClick={() => {
                         handleDisconnect();
@@ -1362,7 +1539,7 @@ export default function WalletHeader() {
               <div className="flex items-center gap-3">
                 <AlertCircle className="text-blue-100" size={28} />
                 <div>
-                  <h2 className="text-2xl font-bold text-white">Save Your Wallet Credentials</h2>
+                  <h2 className="text-2xl font-bold text-white">Back Up Your Recovery Phrase</h2>
                   <p className="text-sm text-blue-200 mt-1">⚠️ This will only be shown once!</p>
                 </div>
               </div>
@@ -1377,8 +1554,8 @@ export default function WalletHeader() {
                   <div className="text-red-800 text-sm space-y-2">
                     <p className="font-bold text-base">⚠️ CRITICAL - READ CAREFULLY</p>
                     <ul className="list-disc list-inside space-y-1">
-                      <li><strong>Save both credentials NOW</strong> - they will NOT be shown again</li>
-                      <li>Anyone with these credentials has FULL ACCESS to your wallet</li>
+                      <li><strong>Save this recovery phrase NOW</strong> - it will NOT be shown again</li>
+                      <li>Anyone with this recovery phrase can access your wallet</li>
                       <li>NEVER share these with anyone</li>
                       <li>Store them in a SECURE location (password manager, encrypted file, or paper)</li>
                       <li>Losing these means PERMANENT loss of access to your funds</li>
@@ -1393,16 +1570,6 @@ export default function WalletHeader() {
                   <label className="block text-gray-900 font-bold text-lg">
                     Recovery Phrase (12 words)
                   </label>
-                  <button
-                    onClick={() => {
-                      navigator.clipboard.writeText(newWalletCreds.mnemonic);
-                      toast.show('Recovery phrase copied to clipboard!', 'success', 3000);
-                    }}
-                    className="flex items-center gap-2 px-3 py-1 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-semibold"
-                  >
-                    <Copy className="w-4 h-4" />
-                    Copy
-                  </button>
                 </div>
                 <div className="bg-gradient-to-br from-blue-50 to-blue-100 border-2 border-blue-400 rounded-lg p-4">
                   <p className="font-mono text-sm text-gray-900 break-all leading-relaxed">
@@ -1414,31 +1581,34 @@ export default function WalletHeader() {
                 </p>
               </div>
 
-              {/* Private Key */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="block text-gray-900 font-bold text-lg">
-                    Private Key (WIF)
-                  </label>
-                  <button
-                    onClick={() => {
-                      navigator.clipboard.writeText(newWalletCreds.privateKey);
-                      toast.show('Private key copied to clipboard!', 'success', 3000);
-                    }}
-                    className="flex items-center gap-2 px-3 py-1 bg-blue-700 text-white rounded-lg hover:bg-blue-800 transition-colors text-sm font-semibold"
-                  >
-                    <Copy className="w-4 h-4" />
-                    Copy
-                  </button>
-                </div>
-                <div className="bg-gradient-to-br from-blue-100 to-blue-200 border-2 border-blue-600 rounded-lg p-4">
-                  <p className="font-mono text-xs text-gray-900 break-all leading-relaxed">
-                    {newWalletCreds.privateKey}
-                  </p>
-                </div>
-                <p className="text-xs text-blue-800 mt-2 font-medium">
-                   Alternative way to restore your wallet. Keep this extremely secure.
+              {/* Password */}
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <p className="text-sm text-gray-700 mb-4">
+                  Set a password to encrypt your wallet on this device. From now on, you will log in using this password.
                 </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Password</label>
+                    <input
+                      type="password"
+                      value={newWalletPassword}
+                      onChange={(e) => setNewWalletPassword(e.target.value)}
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                      placeholder="Enter a password"
+                    />
+                    {renderPasswordStrength(newWalletPassword)}
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Confirm Password</label>
+                    <input
+                      type="password"
+                      value={newWalletPasswordConfirm}
+                      onChange={(e) => setNewWalletPasswordConfirm(e.target.value)}
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                      placeholder="Confirm password"
+                    />
+                  </div>
+                </div>
               </div>
 
               {/* Confirmation Checkbox */}
@@ -1451,8 +1621,8 @@ export default function WalletHeader() {
                     className="w-5 h-5 mt-0.5 cursor-pointer"
                   />
                   <span className="text-white font-semibold">
-                     I have saved my Recovery Phrase and Private Key in a secure location. 
-                    I understand that losing these means permanent loss of access to my wallet.
+                     I have saved my Recovery Phrase in a secure location.
+                    I understand that losing it means permanent loss of access to my wallet.
                   </span>
                 </label>
               </div>
@@ -1461,7 +1631,7 @@ export default function WalletHeader() {
               <div className="flex gap-3">
                 <button
                   onClick={handleConfirmCreateWallet}
-                  disabled={!credsConfirmed || connecting}
+                  disabled={!credsConfirmed || connecting || !passwordRules(newWalletPassword).isStrong || newWalletPassword !== newWalletPasswordConfirm}
                   className="flex-1 bg-gradient-to-r from-blue-600 to-blue-800 text-white px-6 py-4 rounded-lg font-bold text-lg hover:from-blue-700 hover:to-blue-900 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2 shadow-lg"
                 >
                   {connecting ? (
@@ -1472,7 +1642,7 @@ export default function WalletHeader() {
                   ) : (
                     <>
                       <CheckCircle2 size={20} />
-                      I Saved Everything - Create My Wallet
+                      Set Password & Create Wallet
                     </>
                   )}
                 </button>
@@ -1486,6 +1656,8 @@ export default function WalletHeader() {
                       setShowNewWalletModal(false);
                       setNewWalletCreds(null);
                       setCredsConfirmed(false);
+                      setNewWalletPassword('');
+                      setNewWalletPasswordConfirm('');
                     }
                   }}
                   className="text-gray-500 hover:text-gray-700 text-sm underline"
@@ -1493,6 +1665,191 @@ export default function WalletHeader() {
                   Cancel (credentials will be lost)
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Unlock Modal */}
+      {showUnlockModal && (
+        <div className="fixed inset-0 backdrop-blur-md bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg max-w-lg w-full border border-blue-200 shadow-2xl">
+            <div className="flex justify-between items-center p-6 border-b border-blue-200">
+              <h2 className="text-2xl font-bold text-gray-900">Unlock Wallet</h2>
+              <button
+                onClick={() => {
+                  setShowUnlockModal(false);
+                  setUnlockPassword('');
+                }}
+                className="text-gray-600 hover:text-gray-900 transition-colors"
+              >
+                <X size={24} />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className="text-sm text-gray-600">
+                Enter your password to unlock your wallet on this device.
+              </p>
+              <input
+                type="password"
+                value={unlockPassword}
+                onChange={(e) => setUnlockPassword(e.target.value)}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                placeholder="Password"
+              />
+              <button
+                onClick={handleUnlock}
+                disabled={!unlockPassword || unlocking}
+                className="w-full px-6 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {unlocking ? (
+                  <>
+                    <Loader2 className="animate-spin" size={18} />
+                    Unlocking...
+                  </>
+                ) : (
+                  'Unlock'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Set Password Modal (restore/migration) */}
+      {showSetPasswordModal && (
+        <div className="fixed inset-0 backdrop-blur-md bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg max-w-lg w-full border border-blue-200 shadow-2xl">
+            <div className="flex justify-between items-center p-6 border-b border-blue-200">
+              <h2 className="text-2xl font-bold text-gray-900">Set Password</h2>
+              <button
+                onClick={() => {
+                  setShowSetPasswordModal(false);
+                  setPendingPrivateKey(null);
+                  setSetPassword('');
+                  setSetPasswordConfirm('');
+                }}
+                className="text-gray-600 hover:text-gray-900 transition-colors"
+              >
+                <X size={24} />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className="text-sm text-gray-700">{setPasswordMessage}</p>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Password</label>
+                <input
+                  type="password"
+                  value={setPassword}
+                  onChange={(e) => setSetPassword(e.target.value)}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                  placeholder="Enter a password"
+                />
+                {renderPasswordStrength(setPassword)}
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Confirm Password</label>
+                <input
+                  type="password"
+                  value={setPasswordConfirm}
+                  onChange={(e) => setSetPasswordConfirm(e.target.value)}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                  placeholder="Confirm password"
+                />
+              </div>
+              <button
+                onClick={handleSetPasswordAndConnect}
+                disabled={!setPassword || !setPasswordConfirm || settingPassword || !passwordRules(setPassword).isStrong || setPassword !== setPasswordConfirm}
+                className="w-full px-6 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {settingPassword ? (
+                  <>
+                    <Loader2 className="animate-spin" size={18} />
+                    Saving...
+                  </>
+                ) : (
+                  'Save Password & Continue'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Change Password Modal */}
+      {showChangePasswordModal && (
+        <div className="fixed inset-0 backdrop-blur-md bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg max-w-lg w-full border border-blue-200 shadow-2xl">
+            <div className="flex justify-between items-center p-6 border-b border-blue-200">
+              <h2 className="text-2xl font-bold text-gray-900">Change Password</h2>
+              <button
+                onClick={() => {
+                  setShowChangePasswordModal(false);
+                  setCurrentPassword('');
+                  setChangePasswordNew('');
+                  setChangePasswordConfirm('');
+                }}
+                className="text-gray-600 hover:text-gray-900 transition-colors"
+              >
+                <X size={24} />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className="text-sm text-gray-600">
+                Enter your current password, then choose a new one.
+              </p>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Current Password</label>
+                <input
+                  type="password"
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                  placeholder="Current password"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">New Password</label>
+                <input
+                  type="password"
+                  value={changePasswordNew}
+                  onChange={(e) => setChangePasswordNew(e.target.value)}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                  placeholder="New password"
+                />
+                {renderPasswordStrength(changePasswordNew)}
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Confirm New Password</label>
+                <input
+                  type="password"
+                  value={changePasswordConfirm}
+                  onChange={(e) => setChangePasswordConfirm(e.target.value)}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                  placeholder="Confirm new password"
+                />
+              </div>
+              <button
+                onClick={handleChangePassword}
+                disabled={
+                  changingPassword ||
+                  !currentPassword ||
+                  !changePasswordNew ||
+                  !changePasswordConfirm ||
+                  !passwordRules(changePasswordNew).isStrong ||
+                  changePasswordNew !== changePasswordConfirm
+                }
+                className="w-full px-6 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {changingPassword ? (
+                  <>
+                    <Loader2 className="animate-spin" size={18} />
+                    Updating...
+                  </>
+                ) : (
+                  'Update Password'
+                )}
+              </button>
             </div>
           </div>
         </div>

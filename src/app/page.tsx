@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { getActivePrivateKey, onWalletChanged } from '@/lib/wallet';
 import CreateToken from '@/components/CreateToken';
 import TransferToken from '@/components/TransferToken';
 import TokenList from '@/components/TokenList';
@@ -13,9 +14,9 @@ export default function Home() {
   const [privateKey, setPrivateKey] = useState('');
 
   useEffect(() => {
-    // Get private key from session storage
-    const key = sessionStorage.getItem('arkade_private_key') || '';
-    setPrivateKey(key);
+    const update = () => setPrivateKey(getActivePrivateKey() || '');
+    update();
+    return onWalletChanged(update);
   }, []);
 
   return (
