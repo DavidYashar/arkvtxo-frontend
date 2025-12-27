@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { getPublicIndexerUrl } from '@/lib/indexerUrl';
 
 const INDEXER_URL = getPublicIndexerUrl();
-  const INTERNAL_KEY = process.env.INTERNAL_API_KEY || process.env.INDEXER_INTERNAL_KEY || '';
+const INTERNAL_KEY = process.env.INTERNAL_API_KEY || process.env.INDEXER_INTERNAL_KEY || '';
 
 export async function POST(req: Request) {
   try {

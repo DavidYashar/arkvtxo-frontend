@@ -469,8 +469,8 @@ export default function PresalePage() {
 
   const fetchPresaleToken = async () => {
     try {
-      const indexerUrl = getPublicIndexerUrl();
-      const response = await fetch(`${indexerUrl}/api/presale/tokens`);
+      // Use same-origin proxy routes to avoid CORS issues in production.
+      const response = await fetch(`/api/presale/tokens`, { cache: 'no-store' });
       const data = await response.json();
       
       if (data.tokens && data.tokens.length > 0) {
@@ -478,7 +478,7 @@ export default function PresalePage() {
         const token = data.tokens[0];
         
         // Fetch progress data
-        const progressResponse = await fetch(`${indexerUrl}/api/presale/${token.id}/progress`);
+        const progressResponse = await fetch(`/api/presale/${encodeURIComponent(token.id)}/progress`, { cache: 'no-store' });
         const progressData = await progressResponse.json();
         
         setPresaleToken(progressData);
@@ -494,8 +494,10 @@ export default function PresalePage() {
     if (!presaleToken || !walletAddress) return;
 
     try {
-      const indexerUrl = getPublicIndexerUrl();
-      const response = await fetch(`${indexerUrl}/api/presale/${presaleToken.tokenId}/purchases/${walletAddress}`);
+      const response = await fetch(
+        `/api/presale/${encodeURIComponent(presaleToken.tokenId)}/purchases/${encodeURIComponent(walletAddress)}`,
+        { cache: 'no-store' }
+      );
       const data = await response.json();
       setUserPurchases(data);
     } catch (error) {
@@ -507,8 +509,9 @@ export default function PresalePage() {
     if (!presaleToken || !walletAddress) return;
 
     try {
-      const indexerUrl = getPublicIndexerUrl();
-      const response = await fetch(`${indexerUrl}/api/presale/${presaleToken.tokenId}/all-purchases`);
+      const response = await fetch(`/api/presale/${encodeURIComponent(presaleToken.tokenId)}/all-purchases`, {
+        cache: 'no-store',
+      });
       const data = await response.json();
       // Filter purchases to show only current wallet's transactions
       const myPurchases = (data.purchases || []).filter((p: any) => p.walletAddress === walletAddress);
