@@ -8,7 +8,7 @@ export async function GET(
   context: { params: Promise<{ tokenId: string; address: string }> }
 ) {
   try {
-    const { tokenId, address } = (context as unknown as { params: { tokenId: string; address: string } }).params;
+    const { tokenId, address } = await context.params;
 
     const upstream = await fetch(
       `${INDEXER_URL}/api/presale/${encodeURIComponent(tokenId)}/purchases/${encodeURIComponent(address)}`,

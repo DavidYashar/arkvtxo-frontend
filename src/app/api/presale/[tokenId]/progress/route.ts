@@ -5,7 +5,7 @@ const INDEXER_URL = getPublicIndexerUrl();
 
 export async function GET(_req: Request, context: { params: Promise<{ tokenId: string }> }) {
   try {
-    const { tokenId } = (context as unknown as { params: { tokenId: string } }).params;
+    const { tokenId } = await context.params;
 
     const upstream = await fetch(`${INDEXER_URL}/api/presale/${encodeURIComponent(tokenId)}/progress`, {
       method: 'GET',
