@@ -45,6 +45,9 @@ const securityHeaders = [
         'https://arkade.computer',
         'https://www.arkvtxo.com',
         'https://arkvtxo.com',
+        // Backend / indexer (Socket.IO uses wss:// in production)
+        'https://arkvtxo.onrender.com',
+        'wss://arkvtxo.onrender.com',
         'https://mempool.space',
         'https://mutinynet.com',
         ...(isDev ? ['http://localhost:3010', 'ws://localhost:3010'] : []),
