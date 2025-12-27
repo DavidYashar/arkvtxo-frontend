@@ -9,12 +9,13 @@ import TransactionHistory from '@/components/TransactionHistory';
 import SendBitcoin from '@/components/SendBitcoin';
 import TransactionExplorer from '@/components/TransactionExplorer';
 import VtxoLookup from '@/components/VtxoLookup';
+import { getPublicIndexerUrl } from '@/lib/indexerUrl';
 
 export default function Home() {
-  const [privateKey, setPrivateKey] = useState('');
+  const [connected, setConnected] = useState(false);
 
   useEffect(() => {
-    const update = () => setPrivateKey(getActivePrivateKey() || '');
+    const update = () => setConnected(Boolean(getActivePrivateKey()));
     update();
     return onWalletChanged(update);
   }, []);
@@ -33,10 +34,10 @@ export default function Home() {
         </div>
 
         {/* Arkade Transaction History - Full Width */}
-        {privateKey && (
+        {connected && (
           <div className="space-y-8 mb-8">
-            <TransactionExplorer privateKey={privateKey} />
-            <VtxoLookup privateKey={privateKey} />
+            <TransactionExplorer />
+            <VtxoLookup />
           </div>
         )}
       </div>
@@ -60,7 +61,7 @@ export default function Home() {
               </a>
               <span>•</span>
               <a
-                href={`${process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010'}/health`}
+                href={`${getPublicIndexerUrl()}/health`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="hover:text-blue-600 transition-colors font-medium"

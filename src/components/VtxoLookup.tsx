@@ -3,9 +3,7 @@
 import { useState } from 'react';
 import { Search, CheckCircle, XCircle, AlertCircle, Wallet as WalletIcon } from 'lucide-react';
 
-interface VtxoLookupProps {
-  privateKey: string;
-}
+import { getArkadeWallet } from '@/lib/wallet';
 
 interface VtxoInfo {
   txid: string;
@@ -34,7 +32,7 @@ interface TransactionInfo {
   createdAt: number;
 }
 
-export default function VtxoLookup({ privateKey }: VtxoLookupProps) {
+export default function VtxoLookup() {
   const [searchTxid, setSearchTxid] = useState('');
   const [loading, setLoading] = useState(false);
   const [vtxoInfo, setVtxoInfo] = useState<VtxoInfo | null>(null);
@@ -57,36 +55,58 @@ export default function VtxoLookup({ privateKey }: VtxoLookupProps) {
     setExistsInWallet(null);
 
     try {
-      // Check if VTXO or Transaction exists in user's wallet using SDK
-      const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010';
-      const verifyResponse = await fetch(`${indexerUrl}/api/asp/sdk/verify-vtxo`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          privateKey, 
-          vtxoId: searchTxid 
-        })
-      });
-
-      const verifyData = await verifyResponse.json();
-
-      if (verifyData.success && verifyData.exists) {
-        setExistsInWallet(true);
-        setResultType(verifyData.type);
-
-        if (verifyData.type === 'vtxo') {
-          // VTXO found in wallet
-          setVtxoInfo(verifyData.vtxo);
-        } else if (verifyData.type === 'transaction') {
-          // Transaction found in history
-          setTransactionInfo(verifyData.transaction);
-        }
-      } else {
-        // Not found
+      const arkadeWallet = getArkadeWallet();
+      if (!arkadeWallet) {
         setExistsInWallet(false);
         setResultType('not_found');
-        setError(verifyData.message || 'Transaction ID not found in your wallet or history');
+        setError('Wallet not connected');
+        return;
       }
+
+      const raw = searchTxid.trim();
+      const [txid, voutStr] = raw.split(':');
+      const vout = voutStr !== undefined && voutStr !== '' ? Number(voutStr) : null;
+
+      const vtxos = await arkadeWallet.getVtxos({ withRecoverable: true, withUnrolled: true });
+      const vtxo = (vtxos || []).find((v: any) => {
+        if (!v || v.txid !== txid) return false;
+        if (vout === null) return true;
+        return Number(v.vout) === vout;
+      });
+
+      if (vtxo) {
+        setExistsInWallet(true);
+        setResultType('vtxo');
+        setVtxoInfo(vtxo);
+        return;
+      }
+
+      const history = await arkadeWallet.getTransactionHistory();
+      const tx = (history || []).find((h: any) => {
+        const key = h?.key || {};
+        return key.arkTxid === txid || key.boardingTxid === txid || key.commitmentTxid === txid;
+      });
+
+      if (tx) {
+        const key = tx.key || {};
+        const typeStr = String(tx.type || '').toUpperCase();
+        setExistsInWallet(true);
+        setResultType('transaction');
+        setTransactionInfo({
+          boardingTxid: String(key.boardingTxid || ''),
+          commitmentTxid: String(key.commitmentTxid || ''),
+          arkTxid: String(key.arkTxid || ''),
+          type: typeStr.includes('RECEIVE') ? 'RECEIVED' : 'SENT',
+          amount: Number(tx.amount ?? 0),
+          settled: Boolean(tx.settled),
+          createdAt: Number(tx.createdAt ?? Date.now()),
+        });
+        return;
+      }
+
+      setExistsInWallet(false);
+      setResultType('not_found');
+      setError('Transaction ID not found in your wallet or history');
 
     } catch (err: any) {
       setError(err.message || 'Failed to lookup transaction');

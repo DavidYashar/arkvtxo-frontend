@@ -10,6 +10,8 @@ import { createVault, hasVault, unlockVault } from '@/lib/walletVault';
 import { Ramps, VtxoManager } from '@arkade-os/sdk';
 import { useToast } from '@/lib/toast';
 import { getMempoolUrl, getNetworkName } from '@/lib/mempool';
+import { debugLog } from '@/lib/debug';
+import { getPublicIndexerUrl } from '@/lib/indexerUrl';
 import FeeSelection from './FeeSelection';
 
 import logoArkvtxo from '../../images/logo-arkvtxo.png';
@@ -25,6 +27,9 @@ interface AddressInfo {
 
 interface BalanceInfo {
   arkade: number;
+  arkadeAvailable?: number;
+  arkadeSettled?: number;
+  arkadeRecoverable?: number;
   segwit: number;
   taproot: number;
   boarding: number;
@@ -33,6 +38,13 @@ interface BalanceInfo {
 export default function WalletHeader() {
   const pathname = usePathname();
   const toast = useToast();
+
+  const shortId = (value: string) => {
+    if (!value) return '';
+    if (value.length <= 16) return value;
+    return `${value.slice(0, 8)}…${value.slice(-6)}`;
+  };
+
   const [connected, setConnected] = useState(false);
   const [addresses, setAddresses] = useState<AddressInfo | null>(null);
   const [balances, setBalances] = useState<BalanceInfo>({ arkade: 0, segwit: 0, taproot: 0, boarding: 0 });
@@ -48,6 +60,7 @@ export default function WalletHeader() {
   const [boardProgress, setBoardProgress] = useState<string>('');
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
   const [withdrawDestination, setWithdrawDestination] = useState('');
+  const [manualWithdrawDestination, setManualWithdrawDestination] = useState('');
   const [withdrawAmount, setWithdrawAmount] = useState('');
   const [withdrawAll, setWithdrawAll] = useState(false);
   const [withdrawToBoardingAddress, setWithdrawToBoardingAddress] = useState(false);
@@ -60,6 +73,85 @@ export default function WalletHeader() {
   const [newWalletCreds, setNewWalletCreds] = useState<{ privateKey: string; mnemonic: string } | null>(null);
   const [credsConfirmed, setCredsConfirmed] = useState(false);
   const [withdrawMethod, setWithdrawMethod] = useState<'collaborative' | 'unilateral'>('collaborative');
+
+  // --- Per-action approval signing (schnorr) ---
+  const [showApprovalModal, setShowApprovalModal] = useState(false);
+  const [approvalSigning, setApprovalSigning] = useState(false);
+  const [approvalPayload, setApprovalPayload] = useState<Record<string, unknown> | null>(null);
+  const [approvalSignatureHex, setApprovalSignatureHex] = useState<string | null>(null);
+  const [approvalPubkeyHex, setApprovalPubkeyHex] = useState<string | null>(null);
+  const [approvalActionLabel, setApprovalActionLabel] = useState<string>('');
+  const [pendingApprovalAction, setPendingApprovalAction] = useState<
+    | null
+    | { type: 'board' }
+    | {
+        type: 'withdraw';
+        method: 'collaborative' | 'unilateral';
+        destinationAddress: string;
+        amountSats?: string;
+        withdrawAll: boolean;
+        withdrawToBoardingAddress: boolean;
+        feeRate: number;
+      }
+  >(null);
+
+  const bytesToHex = (bytes: Uint8Array): string =>
+    Array.from(bytes)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+
+  const closeApprovalModal = () => {
+    if (approvalSigning) return;
+    setShowApprovalModal(false);
+    setApprovalPayload(null);
+    setApprovalSignatureHex(null);
+    setApprovalPubkeyHex(null);
+    setApprovalActionLabel('');
+    setPendingApprovalAction(null);
+  };
+
+  const openApprovalModal = (
+    actionLabel: string,
+    payload: Record<string, unknown>,
+    action:
+      | { type: 'board' }
+      | {
+          type: 'withdraw';
+          method: 'collaborative' | 'unilateral';
+          destinationAddress: string;
+          amountSats?: string;
+          withdrawAll: boolean;
+          withdrawToBoardingAddress: boolean;
+          feeRate: number;
+        }
+  ) => {
+    setApprovalActionLabel(actionLabel);
+    setApprovalPayload(payload);
+    setApprovalSignatureHex(null);
+    setApprovalPubkeyHex(null);
+    setPendingApprovalAction(action);
+    setShowApprovalModal(true);
+  };
+
+  const signApprovalPayload = async () => {
+    const arkadeWallet = getArkadeWallet();
+    if (!arkadeWallet) throw new Error('Wallet not connected');
+    if (!approvalPayload) throw new Error('Missing approval payload');
+
+    const message = JSON.stringify(approvalPayload);
+    const messageBytes = new TextEncoder().encode(message);
+
+    const [sig, pubkey] = await Promise.all([
+      arkadeWallet.identity.signMessage(messageBytes, 'schnorr'),
+      arkadeWallet.identity.xOnlyPublicKey(),
+    ]);
+
+    const sigHex = bytesToHex(sig);
+    const pubHex = bytesToHex(pubkey);
+    setApprovalSignatureHex(sigHex);
+    setApprovalPubkeyHex(pubHex);
+    return { sigHex, pubHex };
+  };
   const [unrollProgress, setUnrollProgress] = useState<string>('');
   const [showUnrollInfo, setShowUnrollInfo] = useState(false);
 
@@ -458,10 +550,10 @@ export default function WalletHeader() {
         const arkade = getArkadeWallet();
         if (arkade) {
           boardingAddr = await arkade.getBoardingAddress();
-          console.log('🎯 Boarding address fetched:', boardingAddr);
+          debugLog('Boarding address fetched', { boardingAddr: shortId(boardingAddr) });
         }
       } catch (error) {
-        console.error('Failed to get boarding address:', error);
+        console.error('Failed to get boarding address');
       }
       
       if (addrs) {
@@ -475,7 +567,15 @@ export default function WalletHeader() {
       }
       const bals = await getAllBalances();
       if (bals) {
-        setBalances({ arkade: bals.arkade, segwit: bals.segwit, taproot: bals.taproot, boarding: bals.boarding || 0 });
+        setBalances({
+          arkade: bals.arkade,
+          arkadeAvailable: bals.arkadeAvailable,
+          arkadeSettled: bals.arkadeSettled,
+          arkadeRecoverable: bals.arkadeRecoverable,
+          segwit: bals.segwit,
+          taproot: bals.taproot,
+          boarding: bals.boarding || 0,
+        });
       }
     }
   };
@@ -526,8 +626,7 @@ export default function WalletHeader() {
 
       await initializeWallet({
         arkServerUrl: process.env.NEXT_PUBLIC_ARK_SERVER_URL || 'https://arkade.computer',
-        tokenIndexerUrl: process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010',
-        apiKey: process.env.NEXT_PUBLIC_API_KEY,
+        tokenIndexerUrl: getPublicIndexerUrl(),
         privateKey: newWalletCreds.privateKey,
       });
       await checkWallet();
@@ -583,7 +682,7 @@ export default function WalletHeader() {
   };
 
   const handleRefresh = async () => {
-    console.log('Refreshing balances...');
+    debugLog('Refreshing balances');
     const wallet = getWallet();
     if (wallet) {
       try {
@@ -591,21 +690,40 @@ export default function WalletHeader() {
         const arkadeWallet = getArkadeWallet();
         if (arkadeWallet) {
           // Sync the wallet state first
-          console.log('Syncing Arkade wallet...');
+          debugLog('Syncing Arkade wallet');
           try {
             await arkadeWallet.sync();
           } catch (syncErr) {
-            console.warn('Wallet sync warning (non-critical):', syncErr);
+            debugLog('Wallet sync warning (non-critical)', {
+              message: syncErr instanceof Error ? syncErr.message : String(syncErr),
+            });
           }
         }
         
         const bals = await getAllBalances();
-        console.log('Fresh balances:', bals);
+        debugLog('Fresh balances received', {
+          hasBalances: !!bals,
+          arkade: bals?.arkade,
+          arkadeAvailable: bals?.arkadeAvailable,
+          arkadeSettled: bals?.arkadeSettled,
+          arkadeRecoverable: bals?.arkadeRecoverable,
+          boarding: bals?.boarding,
+          segwit: bals?.segwit,
+          taproot: bals?.taproot,
+        });
         if (bals) {
-          setBalances({ arkade: bals.arkade, segwit: bals.segwit, taproot: bals.taproot, boarding: bals.boarding || 0 });
+          setBalances({
+            arkade: bals.arkade,
+            arkadeAvailable: bals.arkadeAvailable,
+            arkadeSettled: bals.arkadeSettled,
+            arkadeRecoverable: bals.arkadeRecoverable,
+            segwit: bals.segwit,
+            taproot: bals.taproot,
+            boarding: bals.boarding || 0,
+          });
         }
       } catch (error) {
-        console.error('Error refreshing balances:', error);
+        console.error('Error refreshing balances');
       }
     }
   };
@@ -622,8 +740,7 @@ export default function WalletHeader() {
       const payload = await unlockVault(unlockPassword);
       await initializeWallet({
         arkServerUrl: process.env.NEXT_PUBLIC_ARK_SERVER_URL || 'https://arkade.computer',
-        tokenIndexerUrl: process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010',
-        apiKey: process.env.NEXT_PUBLIC_API_KEY,
+        tokenIndexerUrl: getPublicIndexerUrl(),
         privateKey: payload.privateKey,
       });
       await checkWallet();
@@ -664,8 +781,7 @@ export default function WalletHeader() {
 
       await initializeWallet({
         arkServerUrl: process.env.NEXT_PUBLIC_ARK_SERVER_URL || 'https://arkade.computer',
-        tokenIndexerUrl: process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010',
-        apiKey: process.env.NEXT_PUBLIC_API_KEY,
+        tokenIndexerUrl: getPublicIndexerUrl(),
         privateKey: pendingPrivateKey,
       });
       await checkWallet();
@@ -744,7 +860,7 @@ export default function WalletHeader() {
     setBoardError(null);
     setBoardSuccess(null);
     setBoardProgress('');
-    setBoarding(true);
+    // Note: we don't set boarding=true until user signs.
 
     try {
       // Use getWalletAsync to ensure wallet is properly loaded
@@ -760,8 +876,7 @@ export default function WalletHeader() {
       }
 
       setBoardProgress('Checking for boarding UTXOs...');
-      console.log('🔍 Starting automated boarding process...');
-      console.log('Boarding balance:', balances.boarding, 'sats');
+      debugLog('Starting automated boarding process', { boardingSats: balances.boarding });
       
       // Import Ramps for onboarding
       const { Ramps } = await import('@arkade-os/sdk');
@@ -774,10 +889,12 @@ export default function WalletHeader() {
       try {
         boardingUtxos = await wallet.wallet.getBoardingUtxos();
         boardingAddress = await wallet.wallet.getBoardingAddress();
-        console.log('📦 Boarding UTXos:', boardingUtxos);
-        console.log('📍 Boarding address:', boardingAddress);
+        debugLog('Boarding info loaded', {
+          utxoCount: Array.isArray(boardingUtxos) ? boardingUtxos.length : 0,
+          boardingAddress: shortId(boardingAddress),
+        });
       } catch (error) {
-        console.error('Failed to get boarding info:', error);
+        console.error('Failed to get boarding info');
         throw new Error(`Failed to get boarding information: ${error instanceof Error ? error.message : 'Unknown error'}`);
       }
       
@@ -793,59 +910,230 @@ export default function WalletHeader() {
           `💡 TIP: Use the "Withdraw to Boarding Address" option when withdrawing from Arkade for easy re-boarding!`
         );
       }
-      
-      console.log(`✅ Found ${boardingUtxos.length} boarding UTXO(s), proceeding with onboard...`);
-      
-      // Call onboard() to board ALL boarding UTXOs into Arkade VTXOs
-      setBoardProgress('Finalizing: Creating Arkade VTXOs...');
-      const txid = await ramps.onboard();
-      
-      console.log('Boarding transaction sent:', txid);
-      setBoardSuccess(`Boarding successful! Transaction ID: ${txid}\n\nAll ${balances.boarding.toLocaleString()} sats are being moved to Arkade L2.\n\nWait ~10 minutes for confirmation. The balance will update automatically.`);
-      setBoardProgress('Complete! Waiting for confirmation...');
-      
-      // Show mempool link toast
-      toast.show(
-        `Board transaction submitted to ${getNetworkName()}! Track confirmation on mempool.`,
-        'info',
-        8000,
-        {
-          action: {
-            label: 'View TX',
-            onClick: () => window.open(getMempoolUrl(txid), '_blank', 'noopener,noreferrer')
-          }
-        }
-      );
-      
-      // Refresh balances multiple times with increasing delays
-      // First check after 5 seconds
-      setTimeout(async () => {
-        console.log('First balance check...');
-        await handleRefresh();
-      }, 5000);
-      
-      // Second check after 15 seconds
-      setTimeout(async () => {
-        console.log('Second balance check...');
-        await handleRefresh();
-      }, 15000);
-      
-      // Third check after 30 seconds
-      setTimeout(async () => {
-        console.log('Third balance check...');
-        await handleRefresh();
-      }, 30000);
-      
-      // Fourth check after 1 minute
-      setTimeout(async () => {
-        console.log('Fourth balance check...');
-        await handleRefresh();
-      }, 60000);
+
+      debugLog('Found boarding UTXOs; awaiting user approval', { utxoCount: boardingUtxos.length });
+
+      const nonce = globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random()}`;
+      const expiresAt = Date.now() + 2 * 60 * 1000;
+      const payload: Record<string, unknown> = {
+        domain: typeof window !== 'undefined' ? window.location.host : 'unknown',
+        action: 'arkade_board',
+        boardingAddress,
+        utxoCount: boardingUtxos.length,
+        expectedBoardingSats: balances.boarding,
+        nonce,
+        expiresAt,
+      };
+
+      openApprovalModal('Board to Arkade', payload, { type: 'board' });
+      return;
     } catch (error) {
-      console.error('Boarding failed:', error);
+      console.error('Boarding failed');
       setBoardError((error as Error).message || 'Boarding failed');
+    }
+  };
+
+  const handleApprovalConfirm = async () => {
+    if (!pendingApprovalAction) return;
+    setApprovalSigning(true);
+    try {
+      await signApprovalPayload();
+
+      if (pendingApprovalAction.type === 'board') {
+        setBoardError(null);
+        setBoardSuccess(null);
+        setBoardProgress('');
+        setBoarding(true);
+        try {
+          const { getWalletAsync } = await import('@/lib/wallet');
+          const wallet = await getWalletAsync();
+          if (!wallet) throw new Error('Wallet not connected');
+
+          const { Ramps } = await import('@arkade-os/sdk');
+          const ramps = new Ramps(wallet.wallet);
+
+          setBoardProgress('Finalizing: Creating Arkade VTXOs...');
+          const txid = await ramps.onboard();
+
+          debugLog('Boarding transaction sent', { txid: shortId(txid) });
+          setBoardSuccess(
+            `Boarding successful! Transaction ID: ${txid}\n\nAll ${balances.boarding.toLocaleString()} sats are being moved to Arkade L2.\n\nWait ~10 minutes for confirmation. The balance will update automatically.`
+          );
+          setBoardProgress('Complete! Waiting for confirmation...');
+
+          toast.show(
+            `Board transaction submitted to ${getNetworkName()}! Track confirmation on mempool.`,
+            'info',
+            8000,
+            {
+              action: {
+                label: 'View TX',
+                onClick: () => window.open(getMempoolUrl(txid), '_blank', 'noopener,noreferrer'),
+              },
+            }
+          );
+
+          setTimeout(async () => {
+            debugLog('Post-board: first balance check');
+            await handleRefresh();
+          }, 5000);
+          setTimeout(async () => {
+            debugLog('Post-board: second balance check');
+            await handleRefresh();
+          }, 15000);
+          setTimeout(async () => {
+            debugLog('Post-board: third balance check');
+            await handleRefresh();
+          }, 30000);
+          setTimeout(async () => {
+            debugLog('Post-board: fourth balance check');
+            await handleRefresh();
+          }, 60000);
+
+          setShowBoardModal(false);
+        } catch (e: any) {
+          console.error('Boarding failed');
+          setBoardError(e?.message || 'Boarding failed');
+        } finally {
+          setBoarding(false);
+        }
+      }
+
+      if (pendingApprovalAction.type === 'withdraw') {
+        setWithdrawError(null);
+        setWithdrawSuccess(null);
+        setWithdrawProgress('');
+        setUnrollProgress('');
+        setWithdrawing(true);
+
+        try {
+          const arkadeWallet = getArkadeWallet();
+          if (!arkadeWallet) throw new Error('Wallet not connected');
+
+          if (pendingApprovalAction.method === 'unilateral') {
+            await handleUnilateralExit({
+              withdrawAll: pendingApprovalAction.withdrawAll,
+              withdrawAmount: pendingApprovalAction.amountSats,
+            });
+            return;
+          }
+
+          setWithdrawProgress('Requesting collaborative exit...');
+          const ramps = new Ramps(arkadeWallet);
+
+          // Get server info
+          setWithdrawProgress('Getting server info...');
+          const info = await arkadeWallet.arkProvider.getInfo();
+          debugLog('Server info received', { hasFees: !!info?.fees });
+
+          let feeInfo;
+          if (info?.fees) {
+            feeInfo = {
+              ...info.fees,
+              txFeeRate: pendingApprovalAction.feeRate.toString(),
+            };
+          } else {
+            feeInfo = {
+              intentFee: {
+                offchainInput: '0',
+                offchainOutput: '0',
+                onchainInput: BigInt(0),
+                onchainOutput: BigInt(200),
+              },
+              txFeeRate: pendingApprovalAction.feeRate.toString(),
+            };
+          }
+
+          // Prepare withdrawal amount
+          let amount: bigint | undefined;
+          if (pendingApprovalAction.withdrawAll) {
+            amount = undefined;
+            debugLog('Withdrawing all available balance');
+          } else {
+            if (!pendingApprovalAction.amountSats || pendingApprovalAction.amountSats === '0') {
+              throw new Error('Please enter an amount');
+            }
+            const amountBigInt = BigInt(pendingApprovalAction.amountSats);
+            amount = amountBigInt;
+            debugLog('Withdrawing amount', { sats: amountBigInt.toString() });
+          }
+
+          setWithdrawProgress('Submitting withdrawal request...');
+          debugLog('Calling offboard', {
+            destination: shortId(pendingApprovalAction.destinationAddress),
+            amountSats: amount?.toString(),
+            txFeeRate: feeInfo?.txFeeRate,
+          });
+
+          const txid = await ramps.offboard(
+            pendingApprovalAction.destinationAddress,
+            feeInfo,
+            amount,
+            (event: any) => {
+              debugLog('Settlement event', {
+                type: event?.type,
+              });
+              switch (event.type) {
+                case 'BATCH_STARTED':
+                  setWithdrawProgress('Batch processing started...');
+                  break;
+                case 'TREE_SIGNING_STARTED':
+                  setWithdrawProgress('Signing transaction tree...');
+                  break;
+                case 'TREE_NONCES':
+                  setWithdrawProgress('Exchanging nonces...');
+                  break;
+                case 'BATCH_FINALIZED':
+                  setWithdrawProgress('Batch finalized!');
+                  break;
+                case 'BATCH_FAILED':
+                  setWithdrawProgress('Batch failed');
+                  throw new Error('Batch processing failed');
+              }
+            }
+          );
+
+          const successMessage = pendingApprovalAction.withdrawToBoardingAddress
+            ? `✅ Withdrawal successful! Transaction ID: ${txid}\n\n` +
+              `🔄 Your funds are being sent to your boarding address.\n\n` +
+              `💡 Once confirmed, click "Board to Arkade" to complete one-step re-boarding!`
+            : `Withdrawal successful! Transaction ID: ${txid}`;
+
+          setWithdrawSuccess(successMessage);
+          setWithdrawProgress('Complete!');
+
+          toast.show(
+            `Withdraw transaction submitted to ${getNetworkName()}! Track confirmation on mempool.`,
+            'info',
+            8000,
+            {
+              action: {
+                label: 'View TX',
+                onClick: () => window.open(getMempoolUrl(txid), '_blank', 'noopener,noreferrer'),
+              },
+            }
+          );
+
+          setWithdrawDestination('');
+          setWithdrawAmount('');
+          setWithdrawAll(false);
+          setWithdrawToBoardingAddress(false);
+
+          setTimeout(async () => {
+            await handleRefresh();
+          }, 2000);
+
+          setShowWithdrawModal(false);
+        } finally {
+          setWithdrawing(false);
+        }
+      }
+
+      closeApprovalModal();
+    } catch (e: any) {
+      toast.show(e?.message || 'Failed to sign approval', 'warning', 6000);
     } finally {
-      setBoarding(false);
+      setApprovalSigning(false);
     }
   };
 
@@ -861,12 +1149,42 @@ export default function WalletHeader() {
     void checkRecoverableBalance();
   };
 
+  const handleWithdrawToBoardingAddressToggle = async (checked: boolean) => {
+    setWithdrawToBoardingAddress(checked);
+
+    if (checked) {
+      setManualWithdrawDestination(withdrawDestination);
+
+      let boardingAddress = addresses?.boarding;
+      if (!boardingAddress) {
+        try {
+          const arkadeWallet = getArkadeWallet();
+          if (arkadeWallet) {
+            boardingAddress = await arkadeWallet.getBoardingAddress();
+          }
+        } catch {
+          // Ignore and handle below.
+        }
+      }
+
+      if (boardingAddress) {
+        setWithdrawDestination(boardingAddress);
+      } else {
+        setWithdrawDestination('');
+        toast.show('Boarding address not available yet. Try Refresh and retry.', 'warning', 4000);
+      }
+      return;
+    }
+
+    setWithdrawDestination(manualWithdrawDestination);
+    setManualWithdrawDestination('');
+  };
+
   const handleWithdrawSubmit = async () => {
     setWithdrawError(null);
     setWithdrawSuccess(null);
     setWithdrawProgress('');
     setUnrollProgress('');
-    setWithdrawing(true);
 
     try {
       const arkadeWallet = getArkadeWallet();
@@ -882,128 +1200,38 @@ export default function WalletHeader() {
           throw new Error('Boarding address not available');
         }
         destinationAddress = addresses.boarding;
-        console.log('🔄 Withdrawing to boarding address for easy re-boarding:', destinationAddress);
+        debugLog('Withdrawing to boarding address for re-boarding', { destination: shortId(destinationAddress) });
       }
 
       if (!destinationAddress) {
         throw new Error('Please enter a destination address or enable "Withdraw to Boarding Address"');
       }
 
-      if (withdrawMethod === 'unilateral') {
-        return await handleUnilateralExit();
-      }
-
-      setWithdrawProgress('Requesting collaborative exit...');
-
-      const ramps = new Ramps(arkadeWallet);
-      
-      // Get server info
-      setWithdrawProgress('Getting server info...');
-      const info = await arkadeWallet.arkProvider.getInfo();
-      console.log('Server info received:', info);
-      
-      // Prepare fee info - ALWAYS use user's selected fee rate
-      let feeInfo;
-      if (info?.fees) {
-        feeInfo = {
-          ...info.fees,
-          txFeeRate: withdrawFeeRate.toString(), // Override with user's selected fee
-        };
-      } else {
-        feeInfo = {
-          intentFee: {
-            offchainInput: '0',
-            offchainOutput: '0',
-            onchainInput: BigInt(0),
-            onchainOutput: BigInt(200),
-          },
-          txFeeRate: withdrawFeeRate.toString(), // Use user's selected fee
-        };
-      }
-      
-      console.log('Using fee info with user-selected fee rate:', {
-        ...feeInfo,
-        userSelectedFeeRate: withdrawFeeRate
-      });
-
-      // Prepare withdrawal amount
-      let amount: bigint | undefined;
-      if (withdrawAll) {
-        amount = undefined;
-        console.log('Withdrawing all available balance');
-      } else {
-        if (!withdrawAmount || withdrawAmount === '0') {
-          throw new Error('Please enter an amount');
-        }
-        amount = BigInt(withdrawAmount);
-        console.log('Withdrawing amount:', amount.toString(), 'sats');
-      }
-
-      setWithdrawProgress('Submitting withdrawal request...');
-      console.log('Calling offboard with:', {
+      const nonce = globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random()}`;
+      const expiresAt = Date.now() + 2 * 60 * 1000;
+      const payload: Record<string, unknown> = {
+        domain: typeof window !== 'undefined' ? window.location.host : 'unknown',
+        action: 'arkade_withdraw',
+        method: withdrawMethod,
         destinationAddress,
-        feeInfo,
-        amount: amount?.toString()
-      });
+        withdrawAll,
+        amountSats: withdrawAll ? 'all' : String(withdrawAmount || ''),
+        feeRate: withdrawFeeRate,
+        withdrawToBoardingAddress,
+        nonce,
+        expiresAt,
+      };
 
-      const txid = await ramps.offboard(
+      openApprovalModal('Withdraw', payload, {
+        type: 'withdraw',
+        method: withdrawMethod,
         destinationAddress,
-        feeInfo,
-        amount,
-        (event: any) => {
-          console.log('Settlement event:', event);
-          switch (event.type) {
-            case 'BATCH_STARTED':
-              setWithdrawProgress('Batch processing started...');
-              break;
-            case 'TREE_SIGNING_STARTED':
-              setWithdrawProgress('Signing transaction tree...');
-              break;
-            case 'TREE_NONCES':
-              setWithdrawProgress('Exchanging nonces...');
-              break;
-            case 'BATCH_FINALIZED':
-              setWithdrawProgress('Batch finalized!');
-              break;
-            case 'BATCH_FAILED':
-              setWithdrawProgress('Batch failed');
-              throw new Error('Batch processing failed');
-          }
-        }
-      );
-
-      const successMessage = withdrawToBoardingAddress
-        ? `✅ Withdrawal successful! Transaction ID: ${txid}\n\n` +
-          `🔄 Your funds are being sent to your boarding address.\n\n` +
-          `💡 Once confirmed, click "Board to Arkade" to complete one-step re-boarding!`
-        : `Withdrawal successful! Transaction ID: ${txid}`;
-      
-      setWithdrawSuccess(successMessage);
-      setWithdrawProgress('Complete!');
-      
-      // Show mempool link toast
-      toast.show(
-        `Withdraw transaction submitted to ${getNetworkName()}! Track confirmation on mempool.`,
-        'info',
-        8000,
-        {
-          action: {
-            label: 'View TX',
-            onClick: () => window.open(getMempoolUrl(txid), '_blank', 'noopener,noreferrer')
-          }
-        }
-      );
-      
-      // Reset form
-      setWithdrawDestination('');
-      setWithdrawAmount('');
-      setWithdrawAll(false);
-      setWithdrawToBoardingAddress(false);
-      
-      // Refresh balances after delay
-      setTimeout(async () => {
-        await handleRefresh();
-      }, 2000);
+        withdrawAll,
+        amountSats: withdrawAll ? undefined : String(withdrawAmount || ''),
+        withdrawToBoardingAddress,
+        feeRate: withdrawFeeRate,
+      });
+      return;
     } catch (err: any) {
       console.error('Withdrawal error:', err);
       
@@ -1032,12 +1260,10 @@ export default function WalletHeader() {
       } else {
         setWithdrawError(err.message || 'Withdrawal failed');
       }
-    } finally {
-      setWithdrawing(false);
     }
   };
 
-  const handleUnilateralExit = async () => {
+  const handleUnilateralExit = async (opts?: { withdrawAll?: boolean; withdrawAmount?: string }) => {
     try {
       const arkadeWallet = getArkadeWallet();
       if (!arkadeWallet) {
@@ -1054,21 +1280,24 @@ export default function WalletHeader() {
       setUnrollProgress('Step 1/5: Creating onchain wallet for miner fees...');
       // Note: OnchainWallet may need to be created differently - check SDK version
       // Using wallet's built-in provider for now
-      console.log('Using wallet provider for unroll fees');
+      debugLog('Using wallet provider for unroll fees');
 
       // Get user's VTXOs
       setUnrollProgress('Step 2/5: Fetching your VTXOs...');
       const vtxos = await arkadeWallet.getVtxos();
-      console.log('Available VTXOs:', vtxos);
+      debugLog('Available VTXOs fetched', { count: Array.isArray(vtxos) ? vtxos.length : 0 });
 
       if (!vtxos || vtxos.length === 0) {
         throw new Error('No VTXOs available to exit');
       }
 
+      const effectiveWithdrawAll = opts?.withdrawAll ?? withdrawAll;
+      const effectiveWithdrawAmount = opts?.withdrawAmount ?? withdrawAmount;
+
       // Select VTXOs to unroll (all if withdrawAll, otherwise calculate)
       let vtxosToUnroll = vtxos;
-      if (!withdrawAll && withdrawAmount) {
-        const targetAmount = BigInt(withdrawAmount);
+      if (!effectiveWithdrawAll && effectiveWithdrawAmount) {
+        const targetAmount = BigInt(effectiveWithdrawAmount);
         let accumulated = BigInt(0);
         vtxosToUnroll = [];
         
@@ -1087,7 +1316,9 @@ export default function WalletHeader() {
         const outpoint = { txid: vtxo.txid, vout: vtxo.vout };
         
         setUnrollProgress(`Step 3/5: Unrolling VTXO ${i + 1}/${vtxosToUnroll.length}...`);
-        console.log(`Creating unroll session for VTXO: ${outpoint.txid}:${outpoint.vout}`);
+        debugLog('Creating unroll session for VTXO', {
+          outpoint: `${shortId(outpoint.txid)}:${outpoint.vout}`,
+        });
 
         // Create unroll session
         // Note: Unroll.Session.create may require different parameters based on SDK version
@@ -1104,15 +1335,15 @@ export default function WalletHeader() {
           switch (step.type) {
             case Unroll.StepType.WAIT:
               setUnrollProgress(`Waiting for tx ${step.txid.substring(0, 8)}... to confirm`);
-              console.log(`Waiting for ${step.txid} to confirm`);
+              debugLog('Unroll step: waiting for confirmation', { txid: shortId(step.txid) });
               break;
             case Unroll.StepType.UNROLL:
               setUnrollProgress(`Broadcasting unroll transaction...`);
-              console.log(`Broadcasting ${step.tx.id}`);
+              debugLog('Unroll step: broadcasting', { txid: shortId(step.tx.id) });
               break;
             case Unroll.StepType.DONE:
               setUnrollProgress(`Unroll complete for VTXO ${i + 1}/${vtxosToUnroll.length}`);
-              console.log(`Unroll complete for ${step.vtxoTxid}`);
+              debugLog('Unroll step: done', { vtxoTxid: shortId(step.vtxoTxid) });
               break;
           }
         }
@@ -1134,10 +1365,10 @@ export default function WalletHeader() {
       );
 
       // Save state for later completion (in real app, store in localStorage or backend)
-      console.log('VTXOs unrolled. User must wait for timelock and complete exit later.');
+      debugLog('VTXOs unrolled; user must wait for timelock and complete exit later');
 
     } catch (err: any) {
-      console.error('Unilateral exit error:', err);
+      console.error('Unilateral exit error');
       setWithdrawError(
         'Unilateral Exit Failed\n\n' +
         err.message + '\n\n' +
@@ -1321,6 +1552,68 @@ export default function WalletHeader() {
             ) : (
               /* Connected State */
               <div>
+
+              {/* Approval Modal (Board/Withdraw) */}
+              {showApprovalModal && approvalPayload && (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4">
+                  <div className="w-full max-w-md rounded-xl border border-blue-300 bg-white shadow-xl">
+                    <div className="p-5 border-b border-blue-200">
+                      <div className="text-lg font-semibold text-blue-900">Confirm & Sign</div>
+                      <div className="text-xs text-blue-700 mt-1">One signature for this action only.</div>
+                    </div>
+
+                    <div className="p-5 space-y-3">
+                      <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
+                        <div className="flex justify-between gap-3">
+                          <span className="text-blue-800">Action</span>
+                          <span className="font-mono">{approvalActionLabel || 'Approval'}</span>
+                        </div>
+                      </div>
+
+                      {(approvalSignatureHex || approvalPubkeyHex) && (
+                        <div className="rounded-lg border border-blue-200 bg-white p-3 text-[11px] text-blue-900">
+                          {approvalPubkeyHex && (
+                            <div className="break-all">
+                              <span className="text-blue-800">x-only pubkey:</span> <span className="font-mono">{approvalPubkeyHex}</span>
+                            </div>
+                          )}
+                          {approvalSignatureHex && (
+                            <div className="break-all mt-2">
+                              <span className="text-blue-800">signature:</span> <span className="font-mono">{approvalSignatureHex}</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="p-5 border-t border-blue-200 flex gap-3">
+                      <button
+                        type="button"
+                        onClick={closeApprovalModal}
+                        disabled={approvalSigning || boarding || withdrawing}
+                        className="flex-1 border border-blue-300 text-blue-900 px-4 py-2 rounded-lg font-semibold hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleApprovalConfirm}
+                        disabled={approvalSigning || boarding || withdrawing}
+                        className="flex-1 bg-blue-700 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-800 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                      >
+                        {approvalSigning ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Signing...
+                          </>
+                        ) : (
+                          'Sign & Continue'
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
                 <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-6 gap-4">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
@@ -1459,6 +1752,19 @@ export default function WalletHeader() {
                     <div className="text-xs text-blue-600 mt-1 font-mono">
                       ≈ {(balances.arkade / 100_000_000).toFixed(8)} BTC
                     </div>
+                    {(balances.arkadeAvailable !== undefined || balances.arkadeSettled !== undefined) && (
+                      <div className="mt-2 text-[11px] text-blue-800/90 space-y-0.5">
+                        {balances.arkadeAvailable !== undefined && (
+                          <div>Available: {Number(balances.arkadeAvailable).toLocaleString()} sats</div>
+                        )}
+                        {balances.arkadeSettled !== undefined && (
+                          <div>Settled: {Number(balances.arkadeSettled).toLocaleString()} sats</div>
+                        )}
+                        {balances.arkadeRecoverable !== undefined && Number(balances.arkadeRecoverable) > 0 && (
+                          <div>Recoverable: {Number(balances.arkadeRecoverable).toLocaleString()} sats</div>
+                        )}
+                      </div>
+                    )}
                   </div>
                   <div className="bg-gradient-to-br from-blue-100 to-blue-200 border border-blue-400 rounded-xl p-4">
                     <div className="text-xs sm:text-sm text-blue-900 font-medium mb-1">SegWit (L1)</div>
@@ -2276,7 +2582,7 @@ export default function WalletHeader() {
                   <input
                     type="checkbox"
                     checked={withdrawToBoardingAddress}
-                    onChange={(e) => setWithdrawToBoardingAddress(e.target.checked)}
+                    onChange={(e) => void handleWithdrawToBoardingAddressToggle(e.target.checked)}
                     className="mt-1 w-4 h-4"
                   />
                   <div className="flex-1">

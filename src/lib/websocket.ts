@@ -6,9 +6,10 @@
  */
 
 import { io, Socket } from 'socket.io-client';
-import { getWebSocketToken } from './api';
+import { debugLog } from './debug';
+import { getPublicIndexerUrl } from './indexerUrl';
 
-const INDEXER_URL = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010';
+const INDEXER_URL = getPublicIndexerUrl();
 
 class WebSocketService {
   private socket: Socket | null = null;
@@ -21,12 +22,11 @@ class WebSocketService {
    */
   connect(): void {
     if (this.socket?.connected) {
-      console.log('WebSocket already connected');
+      debugLog('WebSocket already connected');
       return;
     }
 
-    const token = getWebSocketToken();
-    console.log('Connecting to WebSocket...', INDEXER_URL, '(tokenLength:', token.length + ')');
+    debugLog('Connecting to WebSocket...', { url: INDEXER_URL });
 
     this.socket = io(INDEXER_URL, {
       transports: ['websocket', 'polling'],
@@ -34,33 +34,32 @@ class WebSocketService {
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
       reconnectionAttempts: this.maxReconnectAttempts,
-      auth: {
-        token
-      }
     });
 
     this.socket.on('connect', () => {
-      console.log('✅ WebSocket connected', this.socket?.id);
+      debugLog('WebSocket connected');
       this.connected = true;
       this.reconnectAttempts = 0;
     });
 
     this.socket.on('disconnect', (reason) => {
-      console.log('❌ WebSocket disconnected:', reason);
+      debugLog('WebSocket disconnected', reason);
       this.connected = false;
     });
 
     this.socket.on('connect_error', (error) => {
-      console.error('WebSocket connection error:', error.message, 'url:', INDEXER_URL, 'tokenLength:', token.length);
+      debugLog('WebSocket connection error', {
+        message: error?.message,
+      });
       this.reconnectAttempts++;
       
       if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-        console.error('Max reconnection attempts reached');
+        debugLog('Max reconnection attempts reached');
       }
     });
 
     this.socket.on('reconnect', (attemptNumber) => {
-      console.log(`🔄 WebSocket reconnected after ${attemptNumber} attempts`);
+      debugLog(`WebSocket reconnected after ${attemptNumber} attempts`);
       this.reconnectAttempts = 0;
     });
   }
@@ -73,7 +72,7 @@ class WebSocketService {
       this.socket.disconnect();
       this.socket = null;
       this.connected = false;
-      console.log('WebSocket disconnected');
+      debugLog('WebSocket disconnected');
     }
   }
 
@@ -89,11 +88,11 @@ class WebSocketService {
    */
   joinWallet(walletAddress: string): void {
     if (!this.socket) {
-      console.warn('Cannot join wallet room - not connected');
+      debugLog('Cannot join wallet room - not connected');
       return;
     }
 
-    console.log('Joining wallet room:', walletAddress.slice(0, 20) + '...');
+    debugLog('Joining wallet room');
     this.socket.emit('join-wallet', walletAddress);
   }
 
@@ -105,7 +104,7 @@ class WebSocketService {
       return;
     }
 
-    console.log('Leaving wallet room:', walletAddress.slice(0, 20) + '...');
+    debugLog('Leaving wallet room');
     this.socket.emit('leave-wallet', walletAddress);
   }
 
@@ -114,11 +113,11 @@ class WebSocketService {
    */
   joinToken(tokenId: string): void {
     if (!this.socket) {
-      console.warn('Cannot join token room - not connected');
+      debugLog('Cannot join token room - not connected');
       return;
     }
 
-    console.log('Joining token room:', tokenId);
+    debugLog('Joining token room');
     this.socket.emit('join-token', tokenId);
   }
 
@@ -130,7 +129,7 @@ class WebSocketService {
       return;
     }
 
-    console.log('Leaving token room:', tokenId);
+    debugLog('Leaving token room');
     this.socket.emit('leave-token', tokenId);
   }
 
@@ -144,7 +143,7 @@ class WebSocketService {
     nextRoundSize: number;
   }) => void): () => void {
     if (!this.socket) {
-      console.warn('Cannot subscribe to round countdown - not connected');
+      debugLog('Cannot subscribe to round countdown - not connected');
       return () => {};
     }
 
@@ -167,7 +166,7 @@ class WebSocketService {
     processingTimeMs: number;
   }) => void): () => void {
     if (!this.socket) {
-      console.warn('Cannot subscribe to round completed - not connected');
+      debugLog('Cannot subscribe to round completed - not connected');
       return () => {};
     }
 
@@ -189,7 +188,7 @@ class WebSocketService {
     roundNumber: number;
   }) => void): () => void {
     if (!this.socket) {
-      console.warn('Cannot subscribe to purchase confirmed - not connected');
+      debugLog('Cannot subscribe to purchase confirmed - not connected');
       return () => {};
     }
 
@@ -211,7 +210,7 @@ class WebSocketService {
     roundNumber: number;
   }) => void): () => void {
     if (!this.socket) {
-      console.warn('Cannot subscribe to purchase rejected - not connected');
+      debugLog('Cannot subscribe to purchase rejected - not connected');
       return () => {};
     }
 
@@ -234,7 +233,7 @@ class WebSocketService {
     roundNumber: number;
   }) => void): () => void {
     if (!this.socket) {
-      console.warn('Cannot subscribe to payment requested - not connected');
+      debugLog('Cannot subscribe to payment requested - not connected');
       return () => {};
     }
 

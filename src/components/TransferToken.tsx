@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { Send, Lock } from 'lucide-react';
 import { getWallet, getWalletAsync } from '@/lib/wallet';
+import { getPublicIndexerUrl } from '@/lib/indexerUrl';
 
 export default function TransferToken() {
   const [formData, setFormData] = useState({
@@ -61,7 +62,7 @@ export default function TransferToken() {
           const address = await wallet.getAddress();
           setUserAddress(address);
           
-          const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010';
+          const indexerUrl = getPublicIndexerUrl();
           const response = await fetch(`${indexerUrl}/api/whitelist/check/${address}`);
           const data = await response.json();
           setIsWhitelisted(data.isWhitelisted);

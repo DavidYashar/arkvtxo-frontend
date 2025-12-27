@@ -9,6 +9,7 @@ import * as bip39 from 'bip39';
 import { BIP32Factory } from 'bip32';
 import { ECPairFactory, ECPairAPI } from 'ecpair';
 import * as ecc from '@bitcoinerlab/secp256k1';
+import { debugLog } from './debug';
 
 // Initialize crypto factories synchronously with @bitcoinerlab/secp256k1
 const bip32 = BIP32Factory(ecc);
@@ -149,10 +150,10 @@ export async function initializeWallet(config: WalletConfig): Promise<TokenWalle
   
   // Create Arkade wallet
   const identity = SingleKey.fromHex(privateKey);
-  console.log('🔧 Creating Arkade wallet with config:', {
+  debugLog('Creating Arkade wallet', {
     arkServerUrl: config.arkServerUrl,
     tokenIndexerUrl: config.tokenIndexerUrl,
-    network: 'bitcoin (mainnet)'
+    network: 'bitcoin (mainnet)',
   });
   arkadeWallet = await Wallet.create({
     identity,
@@ -161,10 +162,10 @@ export async function initializeWallet(config: WalletConfig): Promise<TokenWalle
   });
   
   const arkadeAddress = await arkadeWallet.getAddress();
-  console.log('🏦 Arkade wallet created with address:', arkadeAddress);
-  console.log('🌐 Network check:', {
+  debugLog('Arkade wallet created', {
+    addressPrefix: arkadeAddress.slice(0, 6),
     isMainnet: arkadeAddress.startsWith('ark1'),
-    isTestnet: arkadeAddress.startsWith('tark1')
+    isTestnet: arkadeAddress.startsWith('tark1'),
   });
   
   // Create token provider
@@ -257,8 +258,8 @@ export async function getAllAddresses(): Promise<{
   segwit: string;
   taproot: string;
 } | null> {
-  console.log('getAllAddresses called');
-  console.log('arkadeWallet:', arkadeWallet ? 'exists' : 'null');
+  debugLog('getAllAddresses called');
+  debugLog('arkadeWallet exists?', Boolean(arkadeWallet));
   
   if (!arkadeWallet) {
     console.error('getAllAddresses: arkadeWallet is null');
@@ -266,8 +267,8 @@ export async function getAllAddresses(): Promise<{
   }
   
   const privateKey = activePrivateKey;
-  
-  console.log('privateKey from sessionStorage:', privateKey ? 'exists (length ' + privateKey.length + ')' : 'null');
+
+  debugLog('privateKey loaded?', Boolean(privateKey));
     
   if (!privateKey) {
     console.error('getAllAddresses: privateKey is null');
@@ -275,7 +276,7 @@ export async function getAllAddresses(): Promise<{
   }
   
   try {
-    console.log('Starting address generation...');
+    debugLog('Starting address generation...');
     // 1. Arkade L2 address
     const arkadeAddress = await arkadeWallet.getAddress();
     
@@ -285,14 +286,14 @@ export async function getAllAddresses(): Promise<{
     
     // 3. Taproot P2TR - Generate mainnet Taproot address from private key
     const taprootAddress = createTaprootAddress(privateKey);
-    console.log('Taproot address (mainnet):', taprootAddress);
+    debugLog('Taproot address generated (prefix):', taprootAddress.slice(0, 10));
     
     const result = {
       arkade: arkadeAddress,
       segwit: segwitAddress,
       taproot: taprootAddress,
     };
-    console.log('getAllAddresses result:', result);
+    debugLog('getAllAddresses complete');
     return result;
   } catch (error) {
     console.error('Failed to get addresses:', error);
@@ -327,13 +328,16 @@ function createTaprootAddress(privateKeyHex: string): string {
  */
 export async function getAllBalances(): Promise<{
   arkade: number;
+  arkadeAvailable?: number;
+  arkadeSettled?: number;
+  arkadeRecoverable?: number;
   segwit: number;
   taproot: number;
   boarding: number;
   total: number;
 } | null> {
-  console.log('getAllBalances called');
-  console.log('arkadeWallet:', arkadeWallet ? 'exists' : 'null');
+  debugLog('getAllBalances called');
+  debugLog('arkadeWallet exists?', Boolean(arkadeWallet));
   
   if (!arkadeWallet) {
     console.error('getAllBalances: arkadeWallet is null');
@@ -341,8 +345,8 @@ export async function getAllBalances(): Promise<{
   }
   
   const privateKey = activePrivateKey;
-  
-  console.log('privateKey from sessionStorage:', privateKey ? 'exists (length ' + privateKey.length + ')' : 'null');
+
+  debugLog('privateKey loaded?', Boolean(privateKey));
     
   if (!privateKey) {
     console.error('getAllBalances: privateKey is null');
@@ -350,12 +354,16 @@ export async function getAllBalances(): Promise<{
   }
   
   try {
-    console.log('Starting balance fetch...');
+    debugLog('Starting balance fetch...');
     // 1. Arkade L2 balance
     const arkadeBalance = await arkadeWallet.getBalance();
-    const arkadeSats = arkadeBalance.available || 0;
-    
-    // 2. SegWit balance
+    const arkadeAvailable = Number(arkadeBalance?.available ?? 0);
+    const arkadeSettled = Number(arkadeBalance?.settled ?? 0);
+    const arkadeRecoverable = Number(arkadeBalance?.recoverable ?? 0);
+
+    // Arkade SDK balance fields overlap; treat `available` as the spendable total.
+    // Do NOT sum available + preconfirmed + settled (that double-counts).
+    const arkadeSats = arkadeAvailable;
     const bitcoinClient = new BitcoinClient(bitcoin.networks.bitcoin);
     const segwitAddress = await bitcoinClient.createAddressFromHex(privateKey);
     const segwitUtxos = await bitcoinClient.getUTXOs(segwitAddress);
@@ -363,7 +371,7 @@ export async function getAllBalances(): Promise<{
     
     // 3. Taproot balance - Generate mainnet Taproot address from private key
     const taprootAddress = createTaprootAddress(privateKey);
-    console.log('Checking balance for Taproot address:', taprootAddress);
+    debugLog('Checking Taproot balance (address prefix):', taprootAddress.slice(0, 10));
     const taprootUtxos = await bitcoinClient.getUTXOs(taprootAddress);
     const taprootSats = taprootUtxos.reduce((sum, utxo) => sum + utxo.value, 0);
     
@@ -371,22 +379,25 @@ export async function getAllBalances(): Promise<{
     let boardingSats = 0;
     try {
       const boardingAddress = await arkadeWallet.getBoardingAddress();
-      console.log('Checking balance for Boarding address:', boardingAddress);
+      debugLog('Checking boarding balance (address prefix):', boardingAddress.slice(0, 10));
       const boardingUtxos = await bitcoinClient.getUTXOs(boardingAddress);
       boardingSats = boardingUtxos.reduce((sum, utxo) => sum + utxo.value, 0);
-      console.log('Boarding UTXOs:', boardingUtxos, 'Total:', boardingSats);
+      debugLog('Boarding UTXO count/total', { count: boardingUtxos.length, total: boardingSats });
     } catch (error) {
       console.error('Failed to get boarding balance:', error);
     }
     
     const result = {
       arkade: arkadeSats,
+      arkadeAvailable,
+      arkadeSettled,
+      arkadeRecoverable,
       segwit: segwitSats,
       taproot: taprootSats,
       boarding: boardingSats,
       total: arkadeSats + segwitSats + taprootSats + boardingSats,
     };
-    console.log('getAllBalances result:', result);
+    debugLog('getAllBalances complete');
     return result;
   } catch (error) {
     console.error('Failed to get balances:', error);
@@ -404,10 +415,14 @@ export async function canCreateToken(): Promise<{
   arkadeBalance: number;
   errors: string[];
 }> {
-  console.log('canCreateToken called');
-  console.log('Calling getAllBalances...');
+  debugLog('canCreateToken called');
+  debugLog('Calling getAllBalances');
   const balances = await getAllBalances();
-  console.log('getAllBalances returned:', balances);
+  debugLog('getAllBalances returned', {
+    hasBalances: !!balances,
+    segwit: balances?.segwit,
+    arkade: balances?.arkade,
+  });
   
   if (!balances) {
     console.error('canCreateToken: balances is null, wallet not initialized');

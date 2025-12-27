@@ -3,9 +3,7 @@
 import { useState, useEffect } from 'react';
 import { Search, History, Wallet as WalletIcon, ArrowUpRight, ArrowDownLeft, Clock, AlertCircle, Copy, Check, ChevronDown, ChevronUp } from 'lucide-react';
 
-interface TransactionExplorerProps {
-  privateKey: string;
-}
+import { getArkadeWallet, onWalletChanged } from '@/lib/wallet';
 
 interface Transaction {
   boardingTxid: string;
@@ -17,16 +15,23 @@ interface Transaction {
   createdAt: number;
 }
 
-export default function TransactionExplorer({ privateKey }: TransactionExplorerProps) {
+export default function TransactionExplorer() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [copiedTxid, setCopiedTxid] = useState<string | null>(null);
 
+  const mapTxType = (t: any): 'SENT' | 'RECEIVED' => {
+    const raw = String(t || '').toUpperCase();
+    if (raw.includes('RECEIVE')) return 'RECEIVED';
+    return 'SENT';
+  };
+
   const loadTransactions = async () => {
-    if (!privateKey) {
-      setError('No private key available');
+    const arkadeWallet = getArkadeWallet();
+    if (!arkadeWallet) {
+      setError('Wallet not connected');
       return;
     }
 
@@ -34,20 +39,20 @@ export default function TransactionExplorer({ privateKey }: TransactionExplorerP
     setError(null);
 
     try {
-      const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010';
-      const response = await fetch(`${indexerUrl}/api/asp/sdk/history`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ privateKey })
+      const history = await arkadeWallet.getTransactionHistory();
+      const normalized: Transaction[] = (history || []).map((tx: any) => {
+        const key = tx?.key || {};
+        return {
+          boardingTxid: String(key.boardingTxid || ''),
+          commitmentTxid: String(key.commitmentTxid || ''),
+          arkTxid: String(key.arkTxid || ''),
+          type: mapTxType(tx?.type),
+          amount: Number(tx?.amount ?? 0),
+          settled: Boolean(tx?.settled),
+          createdAt: Number(tx?.createdAt ?? Date.now()),
+        };
       });
-
-      const data = await response.json();
-
-      if (data.success) {
-        setTransactions(data.transactions || []);
-      } else {
-        setError(data.error || 'Failed to load transactions');
-      }
+      setTransactions(normalized);
     } catch (err: any) {
       setError(err.message || 'Failed to load transactions');
     } finally {
@@ -56,10 +61,15 @@ export default function TransactionExplorer({ privateKey }: TransactionExplorerP
   };
 
   useEffect(() => {
-    if (privateKey) {
-      loadTransactions();
-    }
-  }, [privateKey]);
+    // Load once on mount, and reload when wallet changes (unlock/lock/restore).
+    void loadTransactions();
+    const unsubscribe = onWalletChanged(() => {
+      setTransactions([]);
+      setError(null);
+      void loadTransactions();
+    });
+    return unsubscribe;
+  }, []);
 
   const formatAmount = (amount: number) => {
     return amount.toLocaleString() + ' sats';

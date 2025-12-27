@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowRight, Lock, Zap, Coins, Shield, Link as LinkIcon } from 'lucide-react';
 import { getActivePrivateKey, onWalletChanged } from '@/lib/wallet';
+import { getPublicIndexerUrl } from '@/lib/indexerUrl';
 
 export default function MainPage() {
   const router = useRouter();
@@ -265,7 +266,7 @@ export default function MainPage() {
               </a>
               <span>•</span>
               <a
-                href={`${process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010'}/health`}
+                href={`${getPublicIndexerUrl()}/health`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="hover:text-blue-100 transition-colors font-medium"

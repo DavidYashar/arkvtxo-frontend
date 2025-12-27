@@ -4,8 +4,10 @@ import { useState, useEffect } from 'react';
 import { PlusCircle, Lock } from 'lucide-react';
 import { getWallet, getWalletAsync, canCreateToken, getArkadeWallet } from '@/lib/wallet';
 import { useToast } from '@/lib/toast';
-import { getWebSocketToken, apiFetch } from '@/lib/api';
+import { apiFetch } from '@/lib/api';
 import { getMempoolUrl, getNetworkName } from '@/lib/mempool';
+import { debugLog } from '@/lib/debug';
+import { getPublicIndexerUrl } from '@/lib/indexerUrl';
 import FeeSelection from './FeeSelection';
 
 export default function CreateToken() {
@@ -77,40 +79,36 @@ export default function CreateToken() {
       try {
         const wallet = await getWalletAsync();
         if (!wallet) {
-          console.log('⏳ Wallet not ready for WebSocket');
+          debugLog('WebSocket: wallet not ready');
           return;
         }
 
         const address = await wallet.getAddress();
-        const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010';
-        const wsToken = getWebSocketToken();
-        
-        console.log('🔌 Setting up WebSocket connection to:', indexerUrl);
-        console.log('📍 Wallet address:', address);
-        console.log('🔑 WebSocket token length:', wsToken.length);
+        const indexerUrl = getPublicIndexerUrl();
+        debugLog('WebSocket: setting up', { indexerUrl });
         
         // Dynamic import to avoid SSR issues
         const { io } = await import('socket.io-client');
         socket = io(indexerUrl, {
           transports: ['websocket', 'polling'],
           reconnection: true,
-          auth: {
-            token: wsToken,
-          },
         });
 
         socket.on('connect', () => {
-          console.log('✅ WebSocket connected! Socket ID:', socket.id);
+          debugLog('WebSocket connected');
           socket.emit('join-wallet', address);
-          console.log('📡 Joined wallet room:', address);
+          debugLog('WebSocket joined wallet room');
         });
 
         socket.on('connect_error', (error: any) => {
-          console.error('❌ WebSocket connection error:', error, { indexerUrl, tokenLength: wsToken.length });
+          debugLog('WebSocket connection error', {
+            message: error instanceof Error ? error.message : String(error),
+            indexerUrl,
+          });
         });
 
         socket.on('token-confirmed', (data: any) => {
-          console.log('🎉 Token confirmed event received!', data);
+          debugLog('WebSocket token-confirmed received');
           toast.show(
             `🎉 ${data.message}`,
             'success',
@@ -127,11 +125,11 @@ export default function CreateToken() {
         // Bitcoin confirmed -> client performs an ASP-side tx (1000 sats to self), then finalize with backend.
         // Fully automatic (no manual user action in-app). Wallet/provider may still require its own approval.
         socket.on('token-bitcoin-confirmed', async (data: any) => {
-          console.log('✅ Bitcoin confirmed event received!', data);
+          debugLog('WebSocket token-bitcoin-confirmed received');
 
           if (!data?.tokenId) return;
           if (handledSettlements.has(data.tokenId)) {
-            console.log('↩️ Settlement already handled for token:', data.tokenId);
+            debugLog('Settlement already handled for token');
             return;
           }
 
@@ -153,10 +151,8 @@ export default function CreateToken() {
             // Safety guard: event should be for the connected wallet.
             // If it doesn't match, do nothing (prevents accidental sends to a third-party address).
             if (issuerAddress && issuerAddress !== currentAddress) {
-              console.warn('⚠️ Ignoring token-bitcoin-confirmed for different wallet', {
+              debugLog('Ignoring token-bitcoin-confirmed for different wallet', {
                 tokenId: data?.tokenId,
-                issuerAddress,
-                currentAddress,
               });
               handledSettlements.delete(data.tokenId);
               return;
@@ -169,35 +165,31 @@ export default function CreateToken() {
 
             // Instead of settle(), we create an ASP-side tx by sending a small amount to self.
             // This returns an Arkade/ASP txid that the backend can verify via the ASP indexer.
-            console.log(`💸 Sending ${SELF_SEND_SATS} sats to self via arkadeWallet.sendBitcoin() ...`, {
-              from: currentAddress,
-              to: currentAddress,
-            });
+            debugLog('Sending self-send for finalization', { sats: SELF_SEND_SATS });
             const txid = await arkadeWallet.sendBitcoin({
               address: currentAddress,
               amount: SELF_SEND_SATS,
             });
-            console.log('✅ arkadeWallet.sendBitcoin() returned txid:', txid);
+            debugLog('Self-send returned txid', { txid: typeof txid === 'string' ? `${txid.slice(0, 8)}…${txid.slice(-6)}` : String(txid) });
 
-            const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010';
-            await apiFetch(`${indexerUrl}/api/tokens/${data.tokenId}/settle`, {
+            await apiFetch(`/api/tokens/${data.tokenId}/settle`, {
               method: 'POST',
               body: JSON.stringify({ txid }),
             });
 
-            console.log('✅ Token finalization completed with backend');
+            debugLog('Token finalization completed with backend');
           } catch (error: any) {
-            console.error('❌ Finalization step failed:', error);
+            console.error('Finalization step failed');
             toast.show(`Finalization failed: ${error?.message || 'Unknown error'}`, 'error', 8000);
           }
         });
 
         socket.on('disconnect', () => {
-          console.log('🔌 WebSocket disconnected');
+          debugLog('WebSocket disconnected');
         });
 
       } catch (error) {
-        console.error('❌ Failed to setup WebSocket:', error);
+        console.error('Failed to setup WebSocket');
       }
     };
 
@@ -205,7 +197,7 @@ export default function CreateToken() {
 
     return () => {
       if (socket) {
-        console.log('🔌 Cleaning up WebSocket connection');
+        debugLog('Cleaning up WebSocket connection');
         socket.disconnect();
       }
     };
@@ -226,11 +218,11 @@ export default function CreateToken() {
       } else if (retryCount < maxRetries) {
         // Wallet not ready yet, retry
         retryCount++;
-        console.log(` Wallet not ready, retrying (${retryCount}/${maxRetries})...`);
+        debugLog('Wallet not ready, retrying', { retryCount, maxRetries });
         setTimeout(checkWithRetry, retryInterval);
       } else {
         // Max retries reached, wallet not available
-        console.warn(' Wallet not available after', maxRetries, 'retries');
+        debugLog('Wallet not available after retries', { maxRetries });
         setCheckingWhitelist(false);
         setIsWhitelisted(false);
       }
@@ -241,13 +233,13 @@ export default function CreateToken() {
 
   const checkWhitelistAndBalances = async () => {
     setCheckingWhitelist(true);
-    console.log('🔍 CreateToken: Starting whitelist check...');
+    debugLog('CreateToken: starting whitelist check');
     
     // Check if address is whitelisted
     const wallet = await getWalletAsync();
     if (wallet) {
       try {
-        console.log('✓ Wallet found, getting address...');
+        debugLog('Wallet found, getting address');
         
         // Add timeout to prevent hanging
         const timeoutPromise = new Promise((_, reject) => 
@@ -259,60 +251,61 @@ export default function CreateToken() {
           timeoutPromise
         ]) as string;
         
-        console.log('✓ Address retrieved:', address);
+        debugLog('Address retrieved');
         setUserAddress(address);
         
         // Check whitelist via backend API (more secure than env variable)
-        const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010';
-        console.log(' DEBUG - process.env.NEXT_PUBLIC_INDEXER_URL:', process.env.NEXT_PUBLIC_INDEXER_URL);
-        console.log(' DEBUG - indexerUrl final value:', indexerUrl);
-        console.log(' Calling whitelist API:', `${indexerUrl}/api/whitelist/check/${address}`);
+        const indexerUrl = getPublicIndexerUrl();
+        debugLog('Calling whitelist API', { indexerUrl });
         
         const whitelistResponse = await fetch(`${indexerUrl}/api/whitelist/check/${address}`);
-        console.log(' Response status:', whitelistResponse.status);
+        debugLog('Whitelist response status', { status: whitelistResponse.status });
         
         const whitelistData = await whitelistResponse.json();
-        console.log(' Response data:', whitelistData);
+        debugLog('Whitelist response received', {
+          isWhitelisted: !!whitelistData?.isWhitelisted,
+          hasMessage: typeof whitelistData?.message === 'string',
+        });
         
         const isAllowed = whitelistData.isWhitelisted;
-        
-        console.log(' Whitelist check result:', {
-          userAddress: address,
-          isAllowed,
-          message: whitelistData.message,
-          fullResponse: whitelistData
-        });
+
+        debugLog('Whitelist check result', { isAllowed: !!isAllowed });
         
         setIsWhitelisted(isAllowed);
         
         // Only check balances if whitelisted
         if (isAllowed) {
-          console.log(' User is whitelisted! Checking balances...');
+          debugLog('User is whitelisted; checking balances');
           await checkBalances();
         } else {
-          console.warn(' User is NOT whitelisted');
+          debugLog('User is not whitelisted');
         }
       } catch (error) {
-        console.error(' Failed to check whitelist:', error);
+        console.error('Failed to check whitelist');
         setIsWhitelisted(false);
       }
     } else {
-      console.warn(' No wallet found');
+      debugLog('No wallet found for whitelist check');
       setIsWhitelisted(false);
     }
     setCheckingWhitelist(false);
-    console.log('🏁 Whitelist check complete. isWhitelisted =', isWhitelisted);
+    debugLog('Whitelist check complete', { isWhitelisted });
   };
 
   const checkBalances = async () => {
     setCheckingBalance(true);
     try {
-      console.log('CreateToken: calling canCreateToken()');
+      debugLog('CreateToken: calling canCreateToken');
       const check = await canCreateToken();
-      console.log('CreateToken: canCreateToken returned:', check);
+      debugLog('CreateToken: canCreateToken returned', {
+        canCreate: !!check?.canCreate,
+        segwitBalance: check?.segwitBalance,
+        arkadeBalance: check?.arkadeBalance,
+        errorsCount: Array.isArray(check?.errors) ? check.errors.length : 0,
+      });
       setBalanceCheck(check);
     } catch (error) {
-      console.error('Failed to check balances:', error);
+      console.error('Failed to check balances');
     } finally {
       setCheckingBalance(false);
     }
@@ -373,16 +366,17 @@ export default function CreateToken() {
       setLoading(true);
       setTxid('');
 
-      console.log('=== COMPONENT: About to create token ===');
-      console.log('Wallet object:', wallet);
-      console.log('Form data:', formData);
-      console.log('Balance check (from display):', balanceCheck);
+      debugLog('CreateToken: about to create token', {
+        symbol: formData.symbol,
+        decimals: formData.decimals,
+        hasPresale: Boolean(formData.presaleBatchAmount || formData.priceInSats || formData.maxPurchasesPerWallet),
+      });
       
       // Convert total supply from display value to raw value with decimals
       // e.g., 10 tokens with 2 decimals = 10 * 10^2 = 1000
       const totalSupplyRaw = BigInt(formData.totalSupply) * BigInt(10 ** parseInt(formData.decimals));
       
-      console.log(' DEBUG - selectedFeeRate:', selectedFeeRate);
+      debugLog('CreateToken: selectedFeeRate', selectedFeeRate);
       
       const params: any = {
         name: formData.name,
@@ -392,7 +386,7 @@ export default function CreateToken() {
         feeRate: selectedFeeRate, // User-selected fee rate
       };
       
-      console.log(' Token creation params:', params);
+      debugLog('CreateToken: token params prepared');
       
       // Add pre-sale parameters if provided
       if (formData.presaleBatchAmount && formData.priceInSats && formData.maxPurchasesPerWallet) {
@@ -402,28 +396,14 @@ export default function CreateToken() {
         params.presaleBatchAmount = batchAmountRaw;
         params.priceInSats = BigInt(formData.priceInSats);
         params.maxPurchasesPerWallet = parseInt(formData.maxPurchasesPerWallet);
-        console.log('Pre-sale params:', {
-          batchAmount: params.presaleBatchAmount.toString(),
-          priceInSats: params.priceInSats.toString(),
-          maxPurchases: params.maxPurchasesPerWallet,
-        });
+        debugLog('CreateToken: presale params prepared');
       }
-      
-      console.log('Token params:', params);
-      
-      console.log('Calling wallet.createToken...');
-      console.log(' Submitting OP_RETURN transaction to mempool...');
+
+      debugLog('CreateToken: calling wallet.createToken()');
       
       const tokenId = await wallet.createToken(params);
       
-      console.log(' OP_RETURN TRANSACTION SUBMITTED!');
-      console.log('Transaction ID:', tokenId);
-      console.log('Token Details:', {
-        name: params.name,
-        symbol: params.symbol,
-        totalSupply: params.totalSupply.toString(),
-        decimals: params.decimals,
-      });
+      debugLog('CreateToken: OP_RETURN submitted (txid prefix)', tokenId?.slice?.(0, 10));
 
       setTxid(tokenId);
       
@@ -445,8 +425,7 @@ export default function CreateToken() {
         }
       );
       
-      console.log(' Token creation process complete. Backend will monitor and confirm.');
-      console.log(' Track TX:', getMempoolUrl(tokenId));
+      debugLog('CreateToken: submitted, backend monitoring');
       
       // Refresh balance check
       await checkBalances();
@@ -462,10 +441,9 @@ export default function CreateToken() {
         maxPurchasesPerWallet: '',
       });
     } catch (error) {
-      console.error(' Token creation failed:', error);
-      console.error('Error details:', {
+      console.error('Token creation failed');
+      debugLog('Token creation error details', {
         message: (error as Error).message,
-        stack: (error as Error).stack,
       });
       
       // Show detailed error message

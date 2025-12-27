@@ -4,6 +4,8 @@ import { useState, useEffect } from 'react';
 import { Coins, RefreshCw, X, Send as SendIcon, Info, Lock } from 'lucide-react';
 import { getWallet, getWalletAsync } from '@/lib/wallet';
 import { getTokens as getStoredTokens } from '@/lib/tokenStorage';
+import { debugLog } from '@/lib/debug';
+import { getPublicIndexerUrl } from '@/lib/indexerUrl';
 import type { TokenBalance } from '@arkade-token/sdk';
 
 interface TokenDetails {
@@ -96,7 +98,7 @@ export default function TokenList() {
         const address = await wallet.getAddress();
         setUserAddress(address);
         
-        const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010';
+        const indexerUrl = getPublicIndexerUrl();
         const response = await fetch(`${indexerUrl}/api/whitelist/check/${address}`);
         const data = await response.json();
         setIsWhitelisted(data.isWhitelisted);
@@ -123,7 +125,7 @@ export default function TokenList() {
       // Load balances from indexer API (this is address-specific)
       const balances = await wallet.getTokenBalances();
       setTokens(mergeWithLocallyCreatedTokens(balances, addr));
-      console.log('Loaded token balances from indexer:', balances.length, 'tokens');
+      debugLog('Loaded token balances from indexer', { tokenCount: balances.length });
     } catch (error) {
       console.error('Failed to load tokens from indexer:', error);
       // Still show locally-created tokens for this wallet, if available.
@@ -166,7 +168,7 @@ export default function TokenList() {
     
     // Fetch full token details from indexer
     try {
-      const indexerUrl = process.env.NEXT_PUBLIC_INDEXER_URL || 'http://localhost:3010';
+      const indexerUrl = getPublicIndexerUrl();
       const response = await fetch(`${indexerUrl}/api/tokens/${token.tokenId}`);
       if (response.ok) {
         const details = await response.json();

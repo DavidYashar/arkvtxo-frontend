@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { Zap } from 'lucide-react';
+import { debugLog } from '@/lib/debug';
 
 export interface FeeOption {
   label: string;
@@ -44,14 +45,20 @@ export default function FeeSelection({ onFeeSelect, estimatedVbytes, selectedFee
       if (!response.ok) throw new Error('Failed to fetch fees');
       
       const fees = await response.json();
-      console.log('📊 Mempool fees:', fees);
+      debugLog('Mempool fees received', {
+        fastestFee: fees?.fastestFee,
+        halfHourFee: fees?.halfHourFee,
+        hourFee: fees?.hourFee,
+        economyFee: fees?.economyFee,
+        minimumFee: fees?.minimumFee,
+      });
       
       // Use fastestFee as base (for next block confirmation)
       // fastestFee is the fee rate needed for fastest confirmation
       const fastestFee = fees.fastestFee || 2;
       const recommendedFee = fastestFee + 1;
-      
-      console.log(`💰 Fee calculation: fastest=${fastestFee}, recommended=${recommendedFee}`);
+
+      debugLog('Fee calculation', { fastestFee, recommendedFee });
       
       const options: FeeOption[] = [
         {
@@ -88,11 +95,11 @@ export default function FeeSelection({ onFeeSelect, estimatedVbytes, selectedFee
   };
 
   const handleCustomFeeChange = (value: string) => {
-    console.log('🔧 Custom fee changed:', value);
+    debugLog('Custom fee changed');
     setCustomFee(value);
     const feeRate = parseInt(value);
     if (!isNaN(feeRate) && feeRate > 0) {
-      console.log('✅ Calling onFeeSelect with custom fee:', feeRate);
+      debugLog('Calling onFeeSelect with custom fee', { feeRate });
       onFeeSelect(feeRate);
       // Force deselect radio buttons when custom fee is entered
       setFeeOptions(feeOptions.map(opt => ({ ...opt })));

@@ -3,6 +3,8 @@
  * Until we have the indexer API ready, we'll store token metadata in localStorage
  */
 
+import { debugLog } from './debug';
+
 export interface StoredTokenMetadata {
   tokenId: string;
   name: string;
@@ -21,7 +23,9 @@ export function saveToken(metadata: StoredTokenMetadata): void {
     const tokens = getTokens();
     tokens.push(metadata);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(tokens));
-    console.log('Token metadata saved to localStorage:', metadata.tokenId);
+    debugLog('Token metadata saved to localStorage', {
+      tokenId: metadata?.tokenId ? `${metadata.tokenId.slice(0, 8)}…${metadata.tokenId.slice(-6)}` : undefined,
+    });
   } catch (error) {
     console.error('Failed to save token metadata:', error);
   }

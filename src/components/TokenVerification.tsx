@@ -3,9 +3,7 @@
 import { useState } from 'react';
 import { Shield, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
 
-interface TokenVerificationProps {
-  privateKey: string;
-}
+import { getArkadeWallet } from '@/lib/wallet';
 
 interface VerificationResult {
   token?: {
@@ -30,7 +28,7 @@ interface VerificationResult {
   verified: boolean;
 }
 
-export default function TokenVerification({ privateKey }: TokenVerificationProps) {
+export default function TokenVerification() {
   const [vtxoId, setVtxoId] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<VerificationResult | null>(null);
@@ -62,29 +60,23 @@ export default function TokenVerification({ privateKey }: TokenVerificationProps
     setResult(null);
 
     try {
-      // Step 1: Get token metadata from indexer
-      const indexerResponse = await fetch(`http://localhost:3003/api/verify/token/${vtxoId}`);
-      const indexerData = await indexerResponse.json();
+      const arkadeWallet = getArkadeWallet();
+      if (!arkadeWallet) {
+        throw new Error('Wallet not connected');
+      }
 
-      // Step 2: Verify VTXO exists in wallet via SDK
-      const sdkResponse = await fetch('http://localhost:3003/api/sdk/verify-vtxo', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ privateKey, vtxoId }),
-      });
-      const sdkData = await sdkResponse.json();
+      const vtxos = await arkadeWallet.getVtxos({ withRecoverable: true, withUnrolled: true });
+      const vtxo = (vtxos || []).find((v: any) => v?.txid === vtxoId);
+      const exists = Boolean(vtxo);
 
-      // Combine results
       setResult({
-        token: indexerData.token,
         aspVerification: {
-          exists: sdkData.exists,
-          settled: sdkData.vtxo?.virtualStatus?.state === 'settled',
-          value: sdkData.vtxo?.value,
-          status: sdkData.vtxo?.virtualStatus,
+          exists,
+          settled: vtxo?.virtualStatus?.state === 'settled',
+          value: vtxo?.value,
+          status: vtxo?.virtualStatus,
         },
-        indexerVerification: indexerData.indexerVerification,
-        verified: sdkData.exists && indexerData.indexerVerification?.found,
+        verified: exists,
       });
 
     } catch (err: any) {
