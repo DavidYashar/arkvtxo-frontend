@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { Sparkles, Copy, CheckCircle } from 'lucide-react';
 import { getTokens } from '@/lib/tokenStorage';
 import type { StoredTokenMetadata } from '@/lib/tokenStorage';
+import { formatTokenAmount } from '@/lib/tokenAmount';
 
 export default function MyCreatedTokens() {
   const [tokens, setTokens] = useState<StoredTokenMetadata[]>([]);
@@ -28,21 +29,6 @@ export default function MyCreatedTokens() {
     navigator.clipboard.writeText(text);
     setCopiedId(tokenId);
     setTimeout(() => setCopiedId(''), 2000);
-  };
-
-  const formatSupply = (supply: string, decimals: number) => {
-    const num = BigInt(supply);
-    const divisor = BigInt(10 ** decimals);
-    const whole = num / divisor;
-    const remainder = num % divisor;
-    
-    if (decimals === 0) {
-      return whole.toString();
-    }
-    
-    // Pad remainder with leading zeros
-    const decimalPart = remainder.toString().padStart(decimals, '0');
-    return `${whole.toString()}.${decimalPart}`;
   };
 
   if (tokens.length === 0) {
@@ -81,7 +67,7 @@ export default function MyCreatedTokens() {
               <div className="text-right">
                 <p className="text-sm text-gray-600">Total Supply</p>
                 <p className="text-lg font-semibold text-gray-900">
-                  {formatSupply(token.totalSupply, token.decimals)} {token.symbol}
+                  {formatTokenAmount(token.totalSupply, token.decimals)} {token.symbol}
                 </p>
               </div>
             </div>

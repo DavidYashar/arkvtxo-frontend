@@ -4,13 +4,13 @@ import { getPublicIndexerUrl } from '@/lib/indexerUrl';
 const INDEXER_URL = getPublicIndexerUrl();
 const INTERNAL_KEY = process.env.INTERNAL_API_KEY || process.env.INDEXER_INTERNAL_KEY || '';
 
-export async function POST(req: Request, context: { params: Promise<{ tokenId: string }> }) {
+export async function POST(req: Request) {
   try {
-    const { tokenId } = await context.params;
-    const idempotencyKey = req.headers.get('idempotency-key') || req.headers.get('Idempotency-Key') || '';
+    const idempotencyKey =
+      req.headers.get('idempotency-key') || req.headers.get('Idempotency-Key') || '';
     const bodyText = await req.text();
 
-    const upstream = await fetch(`${INDEXER_URL}/api/tokens/${encodeURIComponent(tokenId)}/settle`, {
+    const upstream = await fetch(`${INDEXER_URL}/api/transfers`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',

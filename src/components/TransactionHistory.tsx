@@ -1,9 +1,10 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { History, ArrowUpRight, ArrowDownLeft, X, Lock } from 'lucide-react';
-import { getWallet, getWalletAsync } from '@/lib/wallet';
+import { History, ArrowUpRight, ArrowDownLeft, X } from 'lucide-react';
+import { getWalletAsync } from '@/lib/wallet';
 import { getPublicIndexerUrl } from '@/lib/indexerUrl';
+import { formatTokenAmount } from '@/lib/tokenAmount';
 import type { TokenTransfer } from '@arkade-token/sdk';
 
 interface TokenDetails {
@@ -24,8 +25,8 @@ export default function TransactionHistory() {
   const [myAddress, setMyAddress] = useState<string>('');
   const [selectedTransfer, setSelectedTransfer] = useState<TransferDetails | null>(null);
   const [modalLoading, setModalLoading] = useState(false);
-  const [isWhitelisted, setIsWhitelisted] = useState<boolean | null>(null);
-  const [checkingWhitelist, setCheckingWhitelist] = useState(true);
+
+  const [tokenDecimalsById, setTokenDecimalsById] = useState<Record<string, number>>({});
 
   const loadHistory = async () => {
     const wallet = await getWalletAsync();
@@ -38,6 +39,37 @@ export default function TransactionHistory() {
       
       const history = await wallet.getTokenTransfers();
       setTransfers(history);
+
+      // Preload decimals so the list view can display correct amounts.
+      try {
+        const indexerUrl = getPublicIndexerUrl();
+        const uniqueTokenIds = Array.from(new Set(history.map((t) => t.tokenId)));
+        const missing = uniqueTokenIds.filter((id) => tokenDecimalsById[id] === undefined);
+        if (missing.length > 0) {
+          const results = await Promise.all(
+            missing.map(async (tokenId) => {
+              try {
+                const res = await fetch(`${indexerUrl}/api/tokens/${tokenId}`);
+                if (!res.ok) return null;
+                const details = (await res.json()) as TokenDetails;
+                return [tokenId, details.decimals] as const;
+              } catch {
+                return null;
+              }
+            })
+          );
+          setTokenDecimalsById((prev) => {
+            const next = { ...prev };
+            for (const r of results) {
+              if (!r) continue;
+              next[r[0]] = r[1];
+            }
+            return next;
+          });
+        }
+      } catch {
+        // ignore
+      }
     } catch (error) {
       console.error('Failed to load history:', error);
     } finally {
@@ -46,27 +78,6 @@ export default function TransactionHistory() {
   };
 
   useEffect(() => {
-    const checkWhitelist = async () => {
-      const wallet = await getWalletAsync();
-      if (wallet) {
-        try {
-          const address = await wallet.getAddress();
-          
-          const indexerUrl = getPublicIndexerUrl();
-          const response = await fetch(`${indexerUrl}/api/whitelist/check/${address}`);
-          const data = await response.json();
-          setIsWhitelisted(data.isWhitelisted);
-        } catch (error) {
-          console.error('Failed to check whitelist:', error);
-          setIsWhitelisted(false);
-        }
-      } else {
-        setIsWhitelisted(false);
-      }
-      setCheckingWhitelist(false);
-    };
-
-    checkWhitelist();
     loadHistory();
     
     // Refresh every 15 seconds
@@ -86,20 +97,6 @@ export default function TransactionHistory() {
     });
   };
 
-  const formatTokenAmount = (amount: string | bigint, decimals: number) => {
-    const num = typeof amount === 'string' ? BigInt(amount) : amount;
-    const divisor = BigInt(10 ** decimals);
-    const whole = num / divisor;
-    const remainder = num % divisor;
-    
-    if (decimals === 0) {
-      return whole.toString();
-    }
-    
-    const decimalPart = remainder.toString().padStart(decimals, '0');
-    return `${whole.toString()}.${decimalPart}`;
-  };
-
   const isReceived = (transfer: TokenTransfer) => {
     return transfer.to === myAddress;
   };
@@ -114,6 +111,7 @@ export default function TransactionHistory() {
       const response = await fetch(`${indexerUrl}/api/tokens/${transfer.tokenId}`);
       if (response.ok) {
         const tokenDetails = await response.json();
+        setTokenDecimalsById((prev) => ({ ...prev, [transfer.tokenId]: tokenDetails.decimals }));
         setSelectedTransfer({ ...transfer, tokenDetails });
       } else {
         console.error('Failed to fetch token details:', response.status);
@@ -128,40 +126,6 @@ export default function TransactionHistory() {
   const closeModal = () => {
     setSelectedTransfer(null);
   };
-
-  // Show loading while checking whitelist
-  if (checkingWhitelist) {
-    return (
-      <div className="p-6 border border-blue-200 rounded-lg bg-white">
-        <div className="flex items-center gap-3 mb-6">
-          <History className="w-6 h-6 text-blue-600" />
-          <h3 className="text-xl font-semibold text-gray-900">Token Transaction History</h3>
-        </div>
-        <div className="text-center py-8">
-          <div className="animate-spin w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full mx-auto mb-4"></div>
-          <p className="text-gray-600">Checking access...</p>
-        </div>
-      </div>
-    );
-  }
-
-  // If not whitelisted, just blur the content
-  if (isWhitelisted === false) {
-    return (
-      <div className="p-6 border border-blue-200 rounded-lg bg-white filter blur-sm pointer-events-none select-none opacity-60">
-        <div className="flex items-center gap-3 mb-6">
-          <History className="w-6 h-6 text-blue-600" />
-          <h3 className="text-xl font-semibold text-gray-900">Token Transaction History</h3>
-        </div>
-        <div className="space-y-3">
-          <div className="p-4 bg-blue-50 rounded-lg">
-            <div className="h-4 bg-gray-300 rounded mb-2"></div>
-            <div className="h-3 bg-gray-200 rounded"></div>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="p-6 border border-blue-200 rounded-lg bg-white">
@@ -211,7 +175,8 @@ export default function TransactionHistory() {
                   </div>
                   <div className="text-right">
                     <p className={`text-xl font-bold ${received ? 'text-gray-900' : 'text-gray-700'}`}>
-                      {received ? '+' : '-'}{transfer.amount.toString()}
+                      {received ? '+' : '-'}
+                      {formatTokenAmount(transfer.amount, tokenDecimalsById[transfer.tokenId] ?? 0)}
                     </p>
                     <p className="text-xs text-gray-600 font-mono mt-1">
                       {transfer.tokenId.slice(0, 8)}...
@@ -220,7 +185,7 @@ export default function TransactionHistory() {
                 </div>
                 <div className="mt-2 pt-2 border-t border-blue-200">
                   <p className="text-xs text-gray-600">
-                    TX: {transfer.txid.slice(0, 16)}...
+                    ID: {transfer.txid.slice(0, 16)}...
                   </p>
                 </div>
               </div>
@@ -280,7 +245,10 @@ export default function TransactionHistory() {
                             selectedTransfer.amount,
                             selectedTransfer.tokenDetails.decimals
                           )
-                        : selectedTransfer.amount.toString()}{' '}
+                        : formatTokenAmount(
+                            selectedTransfer.amount,
+                            tokenDecimalsById[selectedTransfer.tokenId] ?? 0
+                          )}{' '}
                       {selectedTransfer.tokenDetails?.symbol || ''}
                     </p>
                   </div>
@@ -311,9 +279,9 @@ export default function TransactionHistory() {
                     )}
                   </div>
 
-                  {/* Transaction ID */}
+                  {/* Transfer ID */}
                   <div className="bg-blue-50 p-4 rounded-lg">
-                    <p className="text-xs text-gray-600 mb-1">Transaction ID (VTXO ID)</p>
+                    <p className="text-xs text-gray-600 mb-1">Transfer ID</p>
                     <p className="text-gray-900 font-mono text-xs break-all">
                       {selectedTransfer.txid}
                     </p>

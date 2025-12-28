@@ -61,6 +61,165 @@ export default function CreateToken() {
   const [checkingWhitelist, setCheckingWhitelist] = useState(true);
   const [selectedFeeRate, setSelectedFeeRate] = useState<number>(31); // Default medium priority
 
+  // --- Per-action approval signing (schnorr), same UX as SendBitcoin ---
+  const [showApproval, setShowApproval] = useState(false);
+  const [approvalSigning, setApprovalSigning] = useState(false);
+  const [approvalPayload, setApprovalPayload] = useState<Record<string, unknown> | null>(null);
+  const [approvalSignatureHex, setApprovalSignatureHex] = useState<string | null>(null);
+  const [approvalPubkeyHex, setApprovalPubkeyHex] = useState<string | null>(null);
+
+  type PendingAction =
+    | { type: 'create'; params: any }
+    | { type: 'finalize'; tokenId: string; issuerAddress?: string };
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+
+  const toHex = (bytes: Uint8Array): string =>
+    Array.from(bytes)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+
+  const short = (s: string) => {
+    const v = String(s || '');
+    if (v.length <= 20) return v;
+    return `${v.slice(0, 10)}…${v.slice(-8)}`;
+  };
+
+  const closeApproval = () => {
+    if (approvalSigning || loading) return;
+
+    // If the user cancels finalization, keep a way to re-open.
+    if (pendingAction?.type === 'finalize') {
+      toast.show('Finalization pending. You can finalize when ready.', 'info', 12000, {
+        action: {
+          label: 'Finalize now',
+          onClick: () => setShowApproval(true),
+        },
+      });
+    } else {
+      setPendingAction(null);
+      setApprovalPayload(null);
+    }
+
+    setShowApproval(false);
+  };
+
+  const signApprovalPayload = async () => {
+    const arkadeWallet = getArkadeWallet();
+    if (!arkadeWallet) throw new Error('Arkade wallet not ready');
+    if (!approvalPayload) throw new Error('Missing approval payload');
+
+    const message = JSON.stringify(approvalPayload);
+    const messageBytes = new TextEncoder().encode(message);
+    const [sig, pubkey] = await Promise.all([
+      arkadeWallet.identity.signMessage(messageBytes, 'schnorr'),
+      arkadeWallet.identity.xOnlyPublicKey(),
+    ]);
+
+    const sigHex = toHex(sig);
+    const pubHex = toHex(pubkey);
+    setApprovalSignatureHex(sigHex);
+    setApprovalPubkeyHex(pubHex);
+    return { sigHex, pubHex };
+  };
+
+  const handleApprovalConfirm = async () => {
+    if (!pendingAction) return;
+
+    try {
+      setApprovalSigning(true);
+      await signApprovalPayload();
+
+      if (pendingAction.type === 'create') {
+        setLoading(true);
+        setTxid('');
+
+        const wallet = await getWalletAsync();
+        if (!wallet) throw new Error('Wallet not connected');
+
+        debugLog('CreateToken: approval signed; calling wallet.createToken()');
+        const tokenId = await wallet.createToken(pendingAction.params);
+
+        debugLog('CreateToken: OP_RETURN submitted (txid prefix)', tokenId?.slice?.(0, 10));
+        setTxid(tokenId);
+
+        if (!tokenId || tokenId.length !== 64) {
+          throw new Error('Invalid transaction ID received from SDK');
+        }
+
+        toast.show(
+          ` Token ${pendingAction.params.symbol} submitted! TX: ${tokenId.slice(0, 8)}...${tokenId.slice(-8)}. Backend monitoring for confirmation.`,
+          'success',
+          15000,
+          {
+            action: {
+              label: 'View on Mempool',
+              onClick: () => window.open(getMempoolUrl(tokenId), '_blank', 'noopener,noreferrer'),
+            },
+          }
+        );
+
+        await checkBalances();
+
+        setFormData({
+          name: '',
+          symbol: '',
+          totalSupply: '',
+          decimals: '8',
+          presaleBatchAmount: '',
+          priceInSats: '',
+          maxPurchasesPerWallet: '',
+        });
+
+        setPendingAction(null);
+        setApprovalPayload(null);
+        setShowApproval(false);
+      }
+
+      if (pendingAction.type === 'finalize') {
+        setLoading(true);
+
+        const wallet = await getWalletAsync();
+        if (!wallet) throw new Error('Wallet not connected');
+
+        const currentAddress = await wallet.getAddress();
+        if (pendingAction.issuerAddress && pendingAction.issuerAddress !== currentAddress) {
+          debugLog('Finalize: ignoring for different wallet', { tokenId: pendingAction.tokenId });
+          setPendingAction(null);
+          setApprovalPayload(null);
+          setShowApproval(false);
+          return;
+        }
+
+        const arkadeWallet = getArkadeWallet();
+        if (!arkadeWallet) throw new Error('Arkade wallet not ready');
+
+        debugLog('Finalize: sending self-send for finalization', { sats: SELF_SEND_SATS });
+        const txid = await arkadeWallet.sendBitcoin({
+          address: currentAddress,
+          amount: SELF_SEND_SATS,
+        });
+
+        await apiFetch(`/api/tokens/${pendingAction.tokenId}/settle`, {
+          method: 'POST',
+          body: JSON.stringify({ txid }),
+        });
+
+        debugLog('Token finalization completed with backend');
+        toast.show(' Token finalization submitted.', 'success', 6000);
+
+        setPendingAction(null);
+        setApprovalPayload(null);
+        setShowApproval(false);
+      }
+    } catch (error: any) {
+      console.error('Approval flow failed', error);
+      toast.show(`Approval failed: ${error?.message || 'Unknown error'}`, 'error', 8000);
+    } finally {
+      setApprovalSigning(false);
+      setLoading(false);
+    }
+  };
+
   // WebSocket listener for token confirmation
   useEffect(() => {
     let socket: any = null;
@@ -122,8 +281,7 @@ export default function CreateToken() {
           );
         });
 
-        // Bitcoin confirmed -> client performs an ASP-side tx (1000 sats to self), then finalize with backend.
-        // Fully automatic (no manual user action in-app). Wallet/provider may still require its own approval.
+        // Bitcoin confirmed -> user signs an approval message, then client performs an ASP-side tx (1000 sats to self), then finalize with backend.
         socket.on('token-bitcoin-confirmed', async (data: any) => {
           debugLog('WebSocket token-bitcoin-confirmed received');
 
@@ -136,7 +294,7 @@ export default function CreateToken() {
           handledSettlements.add(data.tokenId);
 
           try {
-            toast.show(data.message || 'Bitcoin confirmed. Finalizing via ASP self-send...', 'info', 6000);
+            toast.show(data.message || 'Bitcoin confirmed. Awaiting approval to finalize...', 'info', 8000);
 
             // Always compute the current wallet address at the time of the event.
             // This guarantees sender/receiver correctness even if the wallet changes after socket setup.
@@ -158,26 +316,23 @@ export default function CreateToken() {
               return;
             }
 
-            const arkadeWallet = getArkadeWallet();
-            if (!arkadeWallet) {
-              throw new Error('Arkade wallet not ready');
-            }
+            const nonce = globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random()}`;
+            const expiresAt = Date.now() + 2 * 60 * 1000;
+            const payload: Record<string, unknown> = {
+              domain: typeof window !== 'undefined' ? window.location.host : 'unknown',
+              action: 'token_finalize',
+              tokenId: data.tokenId,
+              issuerAddress,
+              selfSendSats: SELF_SEND_SATS,
+              nonce,
+              expiresAt,
+            };
 
-            // Instead of settle(), we create an ASP-side tx by sending a small amount to self.
-            // This returns an Arkade/ASP txid that the backend can verify via the ASP indexer.
-            debugLog('Sending self-send for finalization', { sats: SELF_SEND_SATS });
-            const txid = await arkadeWallet.sendBitcoin({
-              address: currentAddress,
-              amount: SELF_SEND_SATS,
-            });
-            debugLog('Self-send returned txid', { txid: typeof txid === 'string' ? `${txid.slice(0, 8)}…${txid.slice(-6)}` : String(txid) });
-
-            await apiFetch(`/api/tokens/${data.tokenId}/settle`, {
-              method: 'POST',
-              body: JSON.stringify({ txid }),
-            });
-
-            debugLog('Token finalization completed with backend');
+            setApprovalPayload(payload);
+            setApprovalSignatureHex(null);
+            setApprovalPubkeyHex(null);
+            setPendingAction({ type: 'finalize', tokenId: data.tokenId, issuerAddress });
+            setShowApproval(true);
           } catch (error: any) {
             console.error('Finalization step failed');
             toast.show(`Finalization failed: ${error?.message || 'Unknown error'}`, 'error', 8000);
@@ -363,9 +518,6 @@ export default function CreateToken() {
     }
 
     try {
-      setLoading(true);
-      setTxid('');
-
       debugLog('CreateToken: about to create token', {
         symbol: formData.symbol,
         decimals: formData.decimals,
@@ -400,46 +552,29 @@ export default function CreateToken() {
       }
 
       debugLog('CreateToken: calling wallet.createToken()');
-      
-      const tokenId = await wallet.createToken(params);
-      
-      debugLog('CreateToken: OP_RETURN submitted (txid prefix)', tokenId?.slice?.(0, 10));
 
-      setTxid(tokenId);
-      
-      // Verify tokenId is valid before showing success
-      if (!tokenId || tokenId.length !== 64) {
-        throw new Error('Invalid transaction ID received from SDK');
-      }
-      
-      // Show mempool link toast IMMEDIATELY after OP_RETURN submission (not waiting for confirmation)
-      toast.show(
-        ` Token ${params.symbol} submitted! TX: ${tokenId.slice(0, 8)}...${tokenId.slice(-8)}. Backend monitoring for confirmation.`,
-        'success',
-        15000,
-        {
-          action: {
-            label: 'View on Mempool',
-            onClick: () => window.open(getMempoolUrl(tokenId), '_blank', 'noopener,noreferrer')
-          }
-        }
-      );
-      
-      debugLog('CreateToken: submitted, backend monitoring');
-      
-      // Refresh balance check
-      await checkBalances();
-      
-      // Reset form
-      setFormData({
-        name: '',
-        symbol: '',
-        totalSupply: '',
-        decimals: '8',
-        presaleBatchAmount: '',
-        priceInSats: '',
-        maxPurchasesPerWallet: '',
-      });
+      const nonce = globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random()}`;
+      const expiresAt = Date.now() + 2 * 60 * 1000;
+      const payload: Record<string, unknown> = {
+        domain: typeof window !== 'undefined' ? window.location.host : 'unknown',
+        action: 'token_create_opreturn',
+        name: params.name,
+        symbol: params.symbol,
+        totalSupplyRaw: params.totalSupply.toString(),
+        decimals: params.decimals,
+        feeRate: params.feeRate,
+        presaleBatchAmountRaw: params.presaleBatchAmount ? String(params.presaleBatchAmount) : null,
+        priceInSats: params.priceInSats ? String(params.priceInSats) : null,
+        maxPurchasesPerWallet: params.maxPurchasesPerWallet ?? null,
+        nonce,
+        expiresAt,
+      };
+
+      setApprovalPayload(payload);
+      setApprovalSignatureHex(null);
+      setApprovalPubkeyHex(null);
+      setPendingAction({ type: 'create', params });
+      setShowApproval(true);
     } catch (error) {
       console.error('Token creation failed');
       debugLog('Token creation error details', {
@@ -461,7 +596,7 @@ export default function CreateToken() {
         toast.show(' Token creation failed: ' + errorMsg, 'error', 5000);
       }
     } finally {
-      setLoading(false);
+      // loading is managed by the approval confirm handler
     }
   };
 
@@ -715,7 +850,7 @@ export default function CreateToken() {
 
         <button
           type="submit"
-          disabled={loading || (balanceCheck !== null && !balanceCheck.canCreate)}
+          disabled={loading || approvalSigning || showApproval || (balanceCheck !== null && !balanceCheck.canCreate)}
           className="w-full px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-lg mt-6"
         >
           {loading ? 'Creating Token...' : (balanceCheck && !balanceCheck.canCreate ? 'Insufficient Balance' : 'Create Token')}
@@ -751,6 +886,87 @@ export default function CreateToken() {
             >
               Track on Mempool →
             </a>
+          </div>
+        </div>
+      )}
+
+      {showApproval && approvalPayload && pendingAction && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-xl border border-blue-200 bg-white shadow-xl">
+            <div className="p-5 border-b border-blue-200">
+              <div className="text-lg font-semibold text-gray-900">Confirm & Sign</div>
+              <div className="text-xs text-gray-700 mt-1">
+                {pendingAction.type === 'finalize' ? 'Finalizing requires one schnorr approval signature.' : 'Token creation requires one schnorr approval signature.'}
+              </div>
+            </div>
+
+            <div className="p-5 space-y-3">
+              {pendingAction.type === 'create' ? (
+                <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-gray-900">
+                  <div className="flex justify-between gap-3">
+                    <span className="text-gray-700">Symbol</span>
+                    <span className="font-mono">{String((pendingAction as any).params?.symbol || '')}</span>
+                  </div>
+                  <div className="flex justify-between gap-3 mt-2">
+                    <span className="text-gray-700">Supply (raw)</span>
+                    <span className="font-mono">{String((pendingAction as any).params?.totalSupply?.toString?.() || '')}</span>
+                  </div>
+                  <div className="flex justify-between gap-3 mt-2">
+                    <span className="text-gray-700">Fee Rate</span>
+                    <span className="font-mono">{String((pendingAction as any).params?.feeRate ?? '')} sat/vB</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-gray-900">
+                  <div className="flex justify-between gap-3">
+                    <span className="text-gray-700">Token</span>
+                    <span className="font-mono">{short((pendingAction as any).tokenId)}</span>
+                  </div>
+                  <div className="flex justify-between gap-3 mt-2">
+                    <span className="text-gray-700">Self-send</span>
+                    <span className="font-mono">{SELF_SEND_SATS.toLocaleString()} sats</span>
+                  </div>
+                </div>
+              )}
+
+              <div className="text-[11px] text-gray-700">
+                This will sign an approval message with your Arkade wallet key, then proceed.
+              </div>
+
+              {(approvalSignatureHex || approvalPubkeyHex) && (
+                <div className="rounded-lg border border-blue-200 bg-white p-3 text-[11px] text-gray-900">
+                  {approvalPubkeyHex && (
+                    <div className="break-all">
+                      <span className="text-gray-700">x-only pubkey:</span> <span className="font-mono">{approvalPubkeyHex}</span>
+                    </div>
+                  )}
+                  {approvalSignatureHex && (
+                    <div className="break-all mt-2">
+                      <span className="text-gray-700">signature:</span> <span className="font-mono">{approvalSignatureHex}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="p-5 border-t border-blue-200 flex gap-3">
+              <button
+                type="button"
+                onClick={closeApproval}
+                disabled={loading || approvalSigning}
+                className="flex-1 border border-blue-300 text-gray-900 px-4 py-2 rounded-lg font-semibold hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleApprovalConfirm}
+                disabled={loading || approvalSigning}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {approvalSigning || loading ? 'Signing...' : 'Sign & Continue'}
+              </button>
+            </div>
           </div>
         </div>
       )}

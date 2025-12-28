@@ -64,193 +64,6 @@ export default function PresalePage() {
   const [paymentCountdown, setPaymentCountdown] = useState<number>(15);
   const [sendingPayment, setSendingPayment] = useState(false);
 
-  // --- Per-action approval signing (schnorr) ---
-  const [showApprovalModal, setShowApprovalModal] = useState(false);
-  const [approvalSigning, setApprovalSigning] = useState(false);
-  const [approvalActionLabel, setApprovalActionLabel] = useState<string>('');
-  const [approvalPayload, setApprovalPayload] = useState<Record<string, unknown> | null>(null);
-  const [approvalSignatureHex, setApprovalSignatureHex] = useState<string | null>(null);
-  const [approvalPubkeyHex, setApprovalPubkeyHex] = useState<string | null>(null);
-  const [pendingApprovalAction, setPendingApprovalAction] = useState<
-    | null
-    | {
-        type: 'round-purchase';
-        tokenId: string;
-        walletAddress: string;
-        batchesPurchased: number;
-        totalPaid: string;
-      }
-    | {
-        type: 'pay-and-submit';
-        requestId: string;
-        creatorAddress: string;
-        amount: string;
-      }
-    | {
-        type: 'cancel-payment';
-        requestId: string;
-      }
-  >(null);
-
-  const bytesToHex = (bytes: Uint8Array): string =>
-    Array.from(bytes)
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join('');
-
-  const closeApprovalModal = () => {
-    if (approvalSigning || purchasing || sendingPayment) return;
-    setShowApprovalModal(false);
-    setApprovalActionLabel('');
-    setApprovalPayload(null);
-    setApprovalSignatureHex(null);
-    setApprovalPubkeyHex(null);
-    setPendingApprovalAction(null);
-  };
-
-  const openApprovalModal = (label: string, payload: Record<string, unknown>, action: NonNullable<typeof pendingApprovalAction>) => {
-    setApprovalActionLabel(label);
-    setApprovalPayload(payload);
-    setApprovalSignatureHex(null);
-    setApprovalPubkeyHex(null);
-    setPendingApprovalAction(action);
-    setShowApprovalModal(true);
-  };
-
-  const signApprovalPayload = async () => {
-    if (!approvalPayload) throw new Error('Missing approval payload');
-    const { getArkadeWallet } = await import('@/lib/wallet');
-    const arkadeWallet = getArkadeWallet();
-    if (!arkadeWallet) throw new Error('Arkade wallet not initialized');
-
-    const message = JSON.stringify(approvalPayload);
-    const messageBytes = new TextEncoder().encode(message);
-
-    const [sig, pubkey] = await Promise.all([
-      arkadeWallet.identity.signMessage(messageBytes, 'schnorr'),
-      arkadeWallet.identity.xOnlyPublicKey(),
-    ]);
-
-    const sigHex = bytesToHex(sig);
-    const pubHex = bytesToHex(pubkey);
-    setApprovalSignatureHex(sigHex);
-    setApprovalPubkeyHex(pubHex);
-    return { sigHex, pubHex };
-  };
-
-  const handleApprovalConfirm = async () => {
-    if (!pendingApprovalAction) return;
-    setApprovalSigning(true);
-    try {
-      await signApprovalPayload();
-
-      if (pendingApprovalAction.type === 'round-purchase') {
-        setPurchasing(true);
-        try {
-          const purchaseIdempotencyKey = crypto.randomUUID();
-          const purchaseResponse = await fetch(`/api/presale/round-purchase`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Idempotency-Key': purchaseIdempotencyKey,
-            },
-            body: JSON.stringify({
-              tokenId: pendingApprovalAction.tokenId,
-              walletAddress: pendingApprovalAction.walletAddress,
-              batchesPurchased: pendingApprovalAction.batchesPurchased,
-              totalPaid: pendingApprovalAction.totalPaid,
-            }),
-          });
-
-          if (!purchaseResponse.ok) {
-            const error = await purchaseResponse.json();
-            throw new Error(error.error || 'Failed to submit purchase request');
-          }
-
-          const result = await purchaseResponse.json();
-          debugLog('Purchase request submitted:', result);
-
-          setPurchaseRequestId(result.requestId);
-          setQueuePosition(result.queuePosition);
-          setBatchesToBuy(1);
-        } finally {
-          setPurchasing(false);
-        }
-      }
-
-      if (pendingApprovalAction.type === 'pay-and-submit') {
-        setSendingPayment(true);
-        try {
-          debugLog('💸 Sending payment...', pendingApprovalAction);
-
-          const { getArkadeWallet } = await import('@/lib/wallet');
-          const arkadeWallet = getArkadeWallet();
-          if (!arkadeWallet) throw new Error('Arkade wallet not initialized');
-
-          const txid = await arkadeWallet.sendBitcoin({
-            address: pendingApprovalAction.creatorAddress,
-            amount: Number(pendingApprovalAction.amount),
-          });
-
-          debugLog('✅ Payment sent! TXID:', txid);
-
-          const submitIdempotencyKey = crypto.randomUUID();
-          const response = await fetch(`/api/presale/submit-payment`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Idempotency-Key': submitIdempotencyKey,
-            },
-            body: JSON.stringify({
-              requestId: pendingApprovalAction.requestId,
-              txid,
-            }),
-          });
-
-          if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.error || 'Failed to submit payment');
-          }
-
-          const result = await response.json();
-          debugLog('Payment submitted:', result);
-
-          setShowPaymentModal(false);
-          toast.show('Payment sent! Waiting for verification...', 'success', 4000);
-        } finally {
-          setSendingPayment(false);
-        }
-      }
-
-      if (pendingApprovalAction.type === 'cancel-payment') {
-        const cancelIdempotencyKey = crypto.randomUUID();
-        const response = await fetch(`/api/presale/cancel-payment`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Idempotency-Key': cancelIdempotencyKey,
-          },
-          body: JSON.stringify({ requestId: pendingApprovalAction.requestId }),
-        });
-
-        if (!response.ok) {
-          const error = await response.json();
-          throw new Error(error.error || 'Failed to cancel payment request');
-        }
-
-        debugLog('✅ Payment request canceled');
-        setShowPaymentModal(false);
-        setPaymentRequest(null);
-        toast.show('Payment request canceled. Supply has been freed for other users.', 'info', 4000);
-      }
-
-      closeApprovalModal();
-    } catch (e: any) {
-      toast.show(e?.message || 'Approval failed', 'error', 6000);
-    } finally {
-      setApprovalSigning(false);
-    }
-  };
-
   useEffect(() => {
     try {
       const alreadyAcknowledged = localStorage.getItem(PRESALE_DISCLAIMER_KEY) === '1';
@@ -418,6 +231,7 @@ export default function PresalePage() {
 
   // Payment modal countdown timer
   useEffect(() => {
+    if (sendingPayment) return;
     if (!showPaymentModal || paymentCountdown <= 0 || !paymentRequest) return;
 
     const timer = setInterval(() => {
@@ -453,7 +267,7 @@ export default function PresalePage() {
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [showPaymentModal, paymentCountdown, paymentRequest]);
+  }, [showPaymentModal, paymentCountdown, paymentRequest, sendingPayment]);
 
   const checkWallet = async () => {
     try {
@@ -560,7 +374,6 @@ export default function PresalePage() {
       const wallet = getWallet();
       if (!wallet) {
         toast.show('Please connect your wallet first', 'warning', 4000);
-        setPurchasing(false);
         return;
       }
 
@@ -603,30 +416,32 @@ export default function PresalePage() {
         totalCost: totalCost.toString(),
       });
 
-      // Require explicit user approval signature before queueing (Phase 1)
-      const nonce = globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random()}`;
-      const expiresAt = Date.now() + 2 * 60 * 1000;
-      openApprovalModal(
-        'Presale: Join Queue',
-        {
-          domain: typeof window !== 'undefined' ? window.location.host : 'unknown',
-          action: 'presale_round_purchase',
-          tokenId: presaleToken.tokenId,
-          walletAddress,
-          batchesPurchased: batchesToBuy,
-          totalPaid: totalCost.toString(),
-          nonce,
-          expiresAt,
+      const purchaseIdempotencyKey = globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random()}`;
+      const purchaseResponse = await fetch(`/api/presale/round-purchase`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': purchaseIdempotencyKey,
         },
-        {
-          type: 'round-purchase',
+        body: JSON.stringify({
           tokenId: presaleToken.tokenId,
           walletAddress,
           batchesPurchased: batchesToBuy,
           totalPaid: totalCost.toString(),
-        }
-      );
-      return;
+        }),
+      });
+
+      if (!purchaseResponse.ok) {
+        const error = await purchaseResponse.json();
+        throw new Error(error.error || 'Failed to submit purchase request');
+      }
+
+      const result = await purchaseResponse.json();
+      debugLog('Purchase request submitted:', result);
+
+      setPurchaseRequestId(result.requestId);
+      setQueuePosition(result.queuePosition);
+      setBatchesToBuy(1);
     } catch (error: any) {
       console.error('Purchase error:', error);
       toast.show('Purchase failed: ' + error.message, 'error', 5000);
@@ -639,32 +454,50 @@ export default function PresalePage() {
   const handlePayment = async () => {
     if (!paymentRequest) return;
 
+    setSendingPayment(true);
     try {
-      const nonce = globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random()}`;
-      const expiresAt = Date.now() + 2 * 60 * 1000;
-      openApprovalModal(
-        'Presale: Pay',
-        {
-          domain: typeof window !== 'undefined' ? window.location.host : 'unknown',
-          action: 'presale_pay',
-          requestId: paymentRequest.requestId,
-          creatorAddress: paymentRequest.creatorAddress,
-          amountSats: paymentRequest.amount,
-          nonce,
-          expiresAt,
-        },
-        {
-          type: 'pay-and-submit',
-          requestId: paymentRequest.requestId,
-          creatorAddress: paymentRequest.creatorAddress,
-          amount: paymentRequest.amount,
-        }
-      );
-      return;
+      debugLog('💸 Sending payment...', paymentRequest);
 
+      const { getArkadeWallet } = await import('@/lib/wallet');
+      const arkadeWallet = getArkadeWallet();
+      if (!arkadeWallet) throw new Error('Arkade wallet not initialized');
+
+      const txid = await arkadeWallet.sendBitcoin({
+        address: paymentRequest.creatorAddress,
+        amount: Number(paymentRequest.amount),
+      });
+
+      debugLog('✅ Payment sent! TXID:', txid);
+
+      const submitIdempotencyKey = globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random()}`;
+      const response = await fetch(`/api/presale/submit-payment`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': submitIdempotencyKey,
+        },
+        body: JSON.stringify({
+          requestId: paymentRequest.requestId,
+          txid,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to submit payment');
+      }
+
+      const result = await response.json();
+      debugLog('Payment submitted:', result);
+
+      setShowPaymentModal(false);
+      setPaymentRequest(null);
+      toast.show('Payment sent! Waiting for verification...', 'success', 4000);
     } catch (error: any) {
       console.error('Payment error:', error);
       toast.show('Payment failed: ' + error.message, 'error', 5000);
+    } finally {
+      setSendingPayment(false);
     }
   };
 
@@ -673,23 +506,26 @@ export default function PresalePage() {
     if (!paymentRequest) return;
     try {
       debugLog('❌ Canceling payment request...', paymentRequest.requestId);
-      const nonce = globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random()}`;
-      const expiresAt = Date.now() + 2 * 60 * 1000;
-      openApprovalModal(
-        'Presale: Cancel Payment',
-        {
-          domain: typeof window !== 'undefined' ? window.location.host : 'unknown',
-          action: 'presale_cancel_payment',
-          requestId: paymentRequest.requestId,
-          nonce,
-          expiresAt,
+
+      const cancelIdempotencyKey = globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random()}`;
+      const response = await fetch(`/api/presale/cancel-payment`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': cancelIdempotencyKey,
         },
-        {
-          type: 'cancel-payment',
-          requestId: paymentRequest.requestId,
-        }
-      );
-      return;
+        body: JSON.stringify({ requestId: paymentRequest.requestId }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to cancel payment request');
+      }
+
+      debugLog('✅ Payment request canceled');
+      setShowPaymentModal(false);
+      setPaymentRequest(null);
+      toast.show('Payment request canceled. Supply has been freed for other users.', 'info', 4000);
 
     } catch (error: any) {
       console.error('Cancel error:', error);
@@ -726,67 +562,6 @@ export default function PresalePage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-blue-100">
-      {/* Approval Modal (Presale) */}
-      {showApprovalModal && approvalPayload && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-md rounded-xl border border-blue-300 bg-white shadow-xl">
-            <div className="p-5 border-b border-blue-200">
-              <div className="text-lg font-semibold text-blue-900">Confirm & Sign</div>
-              <div className="text-xs text-blue-700 mt-1">One signature for this action only.</div>
-            </div>
-
-            <div className="p-5 space-y-3">
-              <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
-                <div className="flex justify-between gap-3">
-                  <span className="text-blue-800">Action</span>
-                  <span className="font-mono">{approvalActionLabel || 'Approval'}</span>
-                </div>
-              </div>
-
-              {(approvalSignatureHex || approvalPubkeyHex) && (
-                <div className="rounded-lg border border-blue-200 bg-white p-3 text-[11px] text-blue-900">
-                  {approvalPubkeyHex && (
-                    <div className="break-all">
-                      <span className="text-blue-800">x-only pubkey:</span> <span className="font-mono">{approvalPubkeyHex}</span>
-                    </div>
-                  )}
-                  {approvalSignatureHex && (
-                    <div className="break-all mt-2">
-                      <span className="text-blue-800">signature:</span> <span className="font-mono">{approvalSignatureHex}</span>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
-            <div className="p-5 border-t border-blue-200 flex gap-3">
-              <button
-                type="button"
-                onClick={closeApprovalModal}
-                disabled={approvalSigning || purchasing || sendingPayment}
-                className="flex-1 border border-blue-300 text-blue-900 px-4 py-2 rounded-lg font-semibold hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleApprovalConfirm}
-                disabled={approvalSigning || purchasing || sendingPayment}
-                className="flex-1 bg-blue-700 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-800 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-              >
-                {approvalSigning ? (
-                  <>
-                    <Clock className="w-4 h-4 animate-spin" />
-                    Signing...
-                  </>
-                ) : (
-                  'Sign & Continue'
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       {showPresaleDisclaimer ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
           <div className="w-full max-w-2xl rounded-2xl border border-blue-300 bg-white p-6 shadow-xl">

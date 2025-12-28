@@ -1,11 +1,14 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Coins, RefreshCw, X, Send as SendIcon, Info, Lock } from 'lucide-react';
-import { getWallet, getWalletAsync } from '@/lib/wallet';
+import { Coins, RefreshCw, X, Send as SendIcon, Info } from 'lucide-react';
+import { getArkadeWallet, getWalletAsync } from '@/lib/wallet';
 import { getTokens as getStoredTokens } from '@/lib/tokenStorage';
 import { debugLog } from '@/lib/debug';
 import { getPublicIndexerUrl } from '@/lib/indexerUrl';
+import { apiFetch } from '@/lib/api';
+import { formatTokenAmount, parseTokenAmount } from '@/lib/tokenAmount';
+import { useToast } from '@/lib/toast';
 import type { TokenBalance } from '@arkade-token/sdk';
 
 interface TokenDetails {
@@ -21,6 +24,7 @@ interface TokenDetails {
 }
 
 export default function TokenList() {
+  const toast = useToast();
   const [tokens, setTokens] = useState<TokenBalance[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedToken, setSelectedToken] = useState<TokenBalance | null>(null);
@@ -29,8 +33,109 @@ export default function TokenList() {
   const [showSendModal, setShowSendModal] = useState(false);
   const [sendForm, setSendForm] = useState({ to: '', amount: '' });
   const [sending, setSending] = useState(false);
-  const [isWhitelisted, setIsWhitelisted] = useState<boolean | null>(null);
   const [userAddress, setUserAddress] = useState<string>('');
+
+  const [tokenDecimalsById, setTokenDecimalsById] = useState<Record<string, number>>({});
+
+  const [showApproval, setShowApproval] = useState(false);
+  const [pendingTransfer, setPendingTransfer] = useState<{
+    tokenId: string;
+    to: string;
+    amountRaw: bigint;
+    amountInput: string;
+  } | null>(null);
+
+  const short = (s: string) => {
+    const v = String(s || '');
+    if (v.length <= 20) return v;
+    return `${v.slice(0, 10)}…${v.slice(-8)}`;
+  };
+
+  const toHex = (bytes: Uint8Array): string =>
+    Array.from(bytes)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+
+  const makeNonce = (): string => {
+    try {
+      return globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+    } catch {
+      return `${Date.now()}-${Math.random()}`;
+    }
+  };
+
+  const closeApproval = () => {
+    if (sending) return;
+    setShowApproval(false);
+    setPendingTransfer(null);
+  };
+
+  const signAndTransfer = async () => {
+    if (!pendingTransfer) return;
+
+    try {
+      const arkadeWallet = getArkadeWallet();
+      if (!arkadeWallet) throw new Error('Wallet not connected');
+
+      const wallet = await getWalletAsync();
+      if (!wallet) throw new Error('Wallet not connected');
+
+      setSending(true);
+
+      const fromAddress = await wallet.getAddress();
+
+      const nonce = makeNonce();
+      const expiresAt = Date.now() + 5 * 60 * 1000;
+      const intentPayload = {
+        intentType: 'ARKADE_TOKEN_TRANSFER_V1',
+        tokenId: pendingTransfer.tokenId,
+        fromAddress,
+        toAddress: pendingTransfer.to,
+        amount: pendingTransfer.amountRaw.toString(),
+        nonce,
+        expiresAt,
+      };
+
+      const message = JSON.stringify(intentPayload);
+      const messageBytes = new TextEncoder().encode(message);
+      const [sig, pubkey] = await Promise.all([
+        arkadeWallet.identity.signMessage(messageBytes, 'schnorr'),
+        arkadeWallet.identity.xOnlyPublicKey(),
+      ]);
+
+      const signatureHex = toHex(sig);
+      const pubkeyHex = toHex(pubkey);
+
+      const result = await apiFetch<{ success: boolean; transferId?: string }>('/api/transfers', {
+        method: 'POST',
+        body: JSON.stringify({
+          tokenId: pendingTransfer.tokenId,
+          fromAddress,
+          toAddress: pendingTransfer.to,
+          amount: pendingTransfer.amountRaw.toString(),
+          intentType: 'ARKADE_TOKEN_TRANSFER_V1',
+          nonce,
+          expiresAt,
+          signatureHex,
+          pubkeyHex,
+        }),
+      });
+
+      const transferId = result?.transferId || '';
+      toast.show(`Token sent successfully${transferId ? ` (Transfer ID: ${transferId.slice(0, 12)}…)` : ''}`, 'success', 4500);
+      setShowSendModal(false);
+      setSendForm({ to: '', amount: '' });
+      loadTokens();
+      setShowApproval(false);
+      setPendingTransfer(null);
+    } catch (error) {
+      console.error('Failed to send token:', error);
+      const msg = (error as Error)?.message || String(error);
+      toast.show('Failed to send token: ' + msg, 'error', 7000);
+    } finally {
+      setSending(false);
+    }
+  };
 
   const mergeWithLocallyCreatedTokens = (balances: TokenBalance[], walletAddr: string): TokenBalance[] => {
     if (!walletAddr) return balances;
@@ -60,21 +165,6 @@ export default function TokenList() {
     return Array.from(byTokenId.values());
   };
 
-  const formatTokenAmount = (amount: string | bigint, decimals: number) => {
-    const num = BigInt(amount);
-    const divisor = BigInt(10 ** decimals);
-    const whole = num / divisor;
-    const remainder = num % divisor;
-    
-    if (decimals === 0) {
-      return whole.toString();
-    }
-    
-    // Pad remainder with leading zeros
-    const decimalPart = remainder.toString().padStart(decimals, '0');
-    return `${whole.toString()}.${decimalPart}`;
-  };
-
   const formatTokenStatus = (status?: string): string => {
     if (!status) return 'Unknown';
     switch (status) {
@@ -88,26 +178,6 @@ export default function TokenList() {
         return 'Failed';
       default:
         return status;
-    }
-  };
-
-  const checkWhitelist = async () => {
-    const wallet = await getWalletAsync();
-    if (wallet) {
-      try {
-        const address = await wallet.getAddress();
-        setUserAddress(address);
-        
-        const indexerUrl = getPublicIndexerUrl();
-        const response = await fetch(`${indexerUrl}/api/whitelist/check/${address}`);
-        const data = await response.json();
-        setIsWhitelisted(data.isWhitelisted);
-      } catch (error) {
-        console.error('Failed to check whitelist:', error);
-        setIsWhitelisted(false);
-      }
-    } else {
-      setIsWhitelisted(false);
     }
   };
 
@@ -126,6 +196,18 @@ export default function TokenList() {
       const balances = await wallet.getTokenBalances();
       setTokens(mergeWithLocallyCreatedTokens(balances, addr));
       debugLog('Loaded token balances from indexer', { tokenCount: balances.length });
+
+      // Seed decimals cache from locally-stored metadata (fast path for newly created tokens)
+      try {
+        const stored = getStoredTokens();
+        setTokenDecimalsById((prev) => {
+          const next = { ...prev };
+          for (const t of stored) next[t.tokenId] = t.decimals;
+          return next;
+        });
+      } catch {
+        // ignore
+      }
     } catch (error) {
       console.error('Failed to load tokens from indexer:', error);
       // Still show locally-created tokens for this wallet, if available.
@@ -143,7 +225,46 @@ export default function TokenList() {
   };
 
   useEffect(() => {
-    checkWhitelist();
+    // Fetch decimals for any tokens not cached yet.
+    if (tokens.length === 0) return;
+
+    const missing = tokens.map((t) => t.tokenId).filter((id) => tokenDecimalsById[id] === undefined);
+    if (missing.length === 0) return;
+
+    let cancelled = false;
+    const indexerUrl = getPublicIndexerUrl();
+
+    (async () => {
+      const results = await Promise.all(
+        missing.map(async (tokenId) => {
+          try {
+            const res = await fetch(`${indexerUrl}/api/tokens/${tokenId}`);
+            if (!res.ok) return null;
+            const details = (await res.json()) as TokenDetails;
+            return [tokenId, details.decimals] as const;
+          } catch {
+            return null;
+          }
+        })
+      );
+
+      if (cancelled) return;
+      setTokenDecimalsById((prev) => {
+        const next = { ...prev };
+        for (const r of results) {
+          if (!r) continue;
+          next[r[0]] = r[1];
+        }
+        return next;
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [tokens, tokenDecimalsById]);
+
+  useEffect(() => {
     loadTokens();
     
     // Refresh every 10 seconds
@@ -179,78 +300,56 @@ export default function TokenList() {
     }
   };
 
-  const handleShowSend = (token: TokenBalance) => {
+  const handleShowSend = async (token: TokenBalance) => {
     setSelectedToken(token);
     setShowSendModal(true);
     setSendForm({ to: '', amount: '' });
+
+    // Ensure we have decimals for parsing.
+    try {
+      const indexerUrl = getPublicIndexerUrl();
+      const response = await fetch(`${indexerUrl}/api/tokens/${token.tokenId}`);
+      if (response.ok) {
+        const details = await response.json();
+        setTokenDetails(details);
+        setTokenDecimalsById((prev) => ({ ...prev, [token.tokenId]: details.decimals }));
+      }
+    } catch {
+      // ignore
+    }
   };
 
   const handleSend = async () => {
     if (!selectedToken || !sendForm.to || !sendForm.amount) {
-      alert('Please fill in all fields');
+      toast.show('Please fill in all fields', 'warning', 4000);
       return;
     }
 
     const wallet = await getWalletAsync();
     if (!wallet) {
-      alert('Wallet not connected');
+      toast.show('Wallet not connected', 'warning', 4000);
       return;
     }
 
     try {
-      setSending(true);
-      
-      await wallet.transferToken({
-        tokenId: selectedToken.tokenId,
-        to: sendForm.to,
-        amount: BigInt(sendForm.amount),
-      });
+      const tokenId = selectedToken.tokenId;
+      const to = sendForm.to.trim();
+      const decimals = tokenDetails?.decimals ?? tokenDecimalsById[tokenId] ?? 0;
+      const amountRaw = parseTokenAmount(sendForm.amount.trim(), decimals);
 
-      alert('Token sent successfully!');
-      setShowSendModal(false);
-      setSendForm({ to: '', amount: '' });
-      loadTokens(); // Refresh balances
+      if (amountRaw <= BigInt(0)) throw new Error('Amount must be greater than 0');
+
+      if (!to.startsWith('tark') && !to.startsWith('ark')) {
+        throw new Error('Recipient must be an Arkade address (starts with "tark" or "ark")');
+      }
+
+      setPendingTransfer({ tokenId, to, amountRaw, amountInput: sendForm.amount.trim() });
+      setShowApproval(true);
     } catch (error) {
       console.error('Failed to send token:', error);
-      alert('Failed to send token: ' + (error as Error).message);
-    } finally {
-      setSending(false);
+      toast.show('Failed to send token: ' + (error as Error).message, 'error', 6000);
     }
   };
-
-  // Show loading while checking whitelist
-  if (isWhitelisted === null) {
-    return (
-      <div className="p-6 border border-blue-200 rounded-lg bg-white">
-        <div className="flex items-center gap-3 mb-6">
-          <Coins className="w-6 h-6 text-blue-600" />
-          <h3 className="text-xl font-semibold text-gray-900">My Tokens</h3>
-        </div>
-        <div className="text-center py-8">
-          <div className="animate-spin w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full mx-auto mb-4"></div>
-          <p className="text-gray-600">Checking access...</p>
-        </div>
-      </div>
-    );
-  }
-
-  // If not whitelisted, just blur the content
-  if (isWhitelisted === false) {
-    return (
-      <div className="p-6 border border-blue-200 rounded-lg bg-white filter blur-sm pointer-events-none select-none opacity-60">
-        <div className="flex items-center gap-3 mb-6">
-          <Coins className="w-6 h-6 text-blue-600" />
-          <h3 className="text-xl font-semibold text-gray-900">My Tokens</h3>
-        </div>
-        <div className="space-y-3">
-          <div className="p-4 bg-blue-50 rounded-lg">
-            <div className="h-4 bg-gray-300 rounded mb-2"></div>
-            <div className="h-3 bg-gray-200 rounded"></div>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="p-6 border border-blue-200 rounded-lg bg-white">
@@ -287,7 +386,9 @@ export default function TokenList() {
                   <p className="text-xs text-gray-600 font-mono">{token.tokenId.slice(0, 16)}...</p>
                 </div>
                 <div className="text-right">
-                  <p className="text-2xl font-bold text-gray-900">{token.balance.toString()}</p>
+                  <p className="text-2xl font-bold text-gray-900">
+                    {formatTokenAmount(token.balance, tokenDecimalsById[token.tokenId] ?? 0)}
+                  </p>
                   <p className="text-xs text-gray-600">Balance</p>
                 </div>
               </div>
@@ -418,7 +519,12 @@ export default function TokenList() {
 
             <div className="mb-4 bg-blue-50 p-4 rounded-lg">
               <p className="text-xs text-gray-600 mb-1">Available Balance</p>
-              <p className="text-2xl font-bold text-gray-900">{selectedToken.balance.toString()}</p>
+              <p className="text-2xl font-bold text-gray-900">
+                {formatTokenAmount(selectedToken.balance, tokenDetails?.decimals ?? tokenDecimalsById[selectedToken.tokenId] ?? 0)}
+              </p>
+              {(tokenDetails?.decimals ?? tokenDecimalsById[selectedToken.tokenId]) !== undefined && (
+                <p className="text-xs text-gray-600 mt-1">Decimals: {tokenDetails?.decimals ?? tokenDecimalsById[selectedToken.tokenId]}</p>
+              )}
             </div>
 
             <div className="space-y-4">
@@ -440,22 +546,99 @@ export default function TokenList() {
                   Amount
                 </label>
                 <input
-                  type="number"
+                  type="text"
                   value={sendForm.amount}
                   onChange={(e) => setSendForm({ ...sendForm, amount: e.target.value })}
+                  onBlur={() => {
+                    const tokenId = selectedToken.tokenId;
+                    const decimals = tokenDetails?.decimals ?? tokenDecimalsById[tokenId] ?? 0;
+                    const input = sendForm.amount.trim();
+                    if (!input) return;
+                    try {
+                      const raw = parseTokenAmount(input, decimals);
+                      setSendForm({ ...sendForm, amount: formatTokenAmount(raw, decimals, { trimTrailingZeros: false, alwaysShowDecimals: true }) });
+                    } catch {
+                      // keep user's text
+                    }
+                  }}
                   placeholder="100"
-                  min="1"
-                  max={selectedToken.balance.toString()}
+                  inputMode="decimal"
                   className="w-full px-4 py-2 bg-white border border-blue-300 rounded-lg text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-inner"
                 />
+                <p className="mt-1 text-xs text-gray-600">
+                  {(() => {
+                    const tokenId = selectedToken.tokenId;
+                    const decimals = tokenDetails?.decimals ?? tokenDecimalsById[tokenId] ?? 0;
+                    const symbol = tokenDetails?.symbol ?? selectedToken.symbol ?? '';
+                    try {
+                      const raw = parseTokenAmount(sendForm.amount.trim() || '0', decimals);
+                      return `Interpreted as: ${formatTokenAmount(raw, decimals, { trimTrailingZeros: false, alwaysShowDecimals: true })}${symbol ? ` ${symbol}` : ''}`;
+                    } catch {
+                      return '';
+                    }
+                  })()}
+                </p>
               </div>
 
               <button
                 onClick={handleSend}
-                disabled={sending || !sendForm.to || !sendForm.amount}
+                disabled={sending || showApproval || !sendForm.to || !sendForm.amount}
                 className="w-full px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-lg"
               >
                 {sending ? 'Sending...' : 'Send Token'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showApproval && pendingTransfer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-xl border border-blue-200 bg-white shadow-xl">
+            <div className="p-5 border-b border-blue-200">
+              <div className="text-lg font-semibold text-gray-900">Confirm Transfer</div>
+              <div className="text-xs text-gray-700 mt-1">This will ask your Arkade wallet to sign a transfer intent, then submit it.</div>
+            </div>
+
+            <div className="p-5 space-y-3">
+              <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-gray-900">
+                <div className="flex justify-between gap-3">
+                  <span className="text-gray-700">To</span>
+                  <span className="font-mono">{short(pendingTransfer.to)}</span>
+                </div>
+                <div className="flex justify-between gap-3 mt-2">
+                  <span className="text-gray-700">Amount</span>
+                  <span className="font-mono">
+                    {formatTokenAmount(
+                      pendingTransfer.amountRaw,
+                      tokenDetails?.decimals ?? tokenDecimalsById[pendingTransfer.tokenId] ?? 0
+                    )}
+                    {tokenDetails?.symbol ? ` ${tokenDetails.symbol}` : ''}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-3 mt-2">
+                  <span className="text-gray-700">Token</span>
+                  <span className="font-mono">{short(pendingTransfer.tokenId)}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-5 border-t border-blue-200 flex gap-3">
+              <button
+                type="button"
+                onClick={closeApproval}
+                disabled={sending}
+                className="flex-1 border border-blue-300 text-gray-900 px-4 py-2 rounded-lg font-semibold hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={signAndTransfer}
+                disabled={sending}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {sending ? 'Sending...' : 'Send'}
               </button>
             </div>
           </div>
